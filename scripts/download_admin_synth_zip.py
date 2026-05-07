@@ -10,7 +10,7 @@ Examples:
     --cookie 'admin_session=YOUR_JWT' -o synthetic_approved.zip
 
   set ADMIN_SESSION=admin_session=YOUR_JWT
-  python scripts/download_admin_synth_zip.py --url https://speech-data-production.up.railway.app
+  python scripts/download_admin_synth_zip.py --url https://speech-backend-12c1f.up.railway.app
 
   Or add to backend/.env (not committed): ADMIN_SESSION=... or ADMIN_LOGIN_EMAIL / ADMIN_LOGIN_PASSWORD.
 
