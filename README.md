@@ -199,11 +199,75 @@ For local use, set `CORS_ORIGINS` to exact origins (e.g. `http://localhost:5173,
 
 ## Deployment notes (Railway)
 
-- Railway should run the `Procfile` command from `[Procfile](Procfile)` (uvicorn on `$PORT`).
-- Set `CORS_ORIGINS` in Railway service variables to every deployed frontend origin (comma-separated).
-- If admin UI and API are on different hosts over HTTPS, you typically need:
-  - `ADMIN_COOKIE_SAMESITE=none`
-  - `ADMIN_COOKIE_SECURE=true`
+This backend is compatible with Railway’s default Python deploy **or** a Docker-based deploy.
+
+### Recommended: Docker deploy (includes ffmpeg)
+
+The repo includes a `[Dockerfile](Dockerfile)` that installs `ffmpeg` (needed for `pydub` audio conversions). If you use any feature path that depends on server-side conversions, Docker avoids surprises.
+
+### Railway service setup
+
+- **Root Directory**: set to `backend`
+- **Start command**: Railway can use `[Procfile](Procfile)` (uvicorn binds to `$PORT`).
+
+### Railway environment variables (copy/paste template)
+
+Set these in the Railway service **Variables**.
+
+**Required**
+
+- `MONGODB_URI` = your external Mongo URL (`mongodb://...` or `mongodb+srv://...`)
+- `DATABASE_NAME` = `speech_parallel` (or your preferred name)
+- `CORS_ORIGINS` = comma-separated exact frontend origins, for example:
+  - `https://<your-admin-web-service>.up.railway.app`
+  - `https://<your-web-service>.up.railway.app`
+- `ADMIN_JWT_SECRET` = long random secret
+
+**Cross-domain cookies (admin-web and API are different Railway domains)**
+
+- `ADMIN_COOKIE_SECURE=true`
+- `ADMIN_COOKIE_SAMESITE=none`
+
+If you use contributor cookie auth (`/api/contributor/auth/*`) in production, also set:
+
+- `CONTRIBUTOR_COOKIE_SECURE=true`
+- `CONTRIBUTOR_COOKIE_SAMESITE=none`
+- (Optional but recommended) `CONTRIBUTOR_JWT_SECRET=<another-long-random-secret>`
+
+Notes:
+
+- On Railway, the API will **fail to start** if `CORS_ORIGINS` is not set (see `[app/main.py](app/main.py)`).
+- `CORS_ORIGINS` must not include `*` because the API uses credentialed requests.
+
+### Post-deploy smoke tests
+
+After Railway assigns a domain to the API service (for example `https://<api>.up.railway.app`):
+
+1) Health:
+
+```bash
+curl -sS https://<api-domain>/health
+```
+
+2) Docs:
+
+```bash
+curl -I https://<api-domain>/docs
+```
+
+3) Admin cookie flow (run from anywhere; you should see a `set-cookie` header):
+
+```bash
+curl -i https://<api-domain>/api/admin/auth/login ^
+  -H "content-type: application/json" ^
+  -d "{\"email\":\"you@example.com\",\"password\":\"your-password\"}"
+```
+
+4) Public list:
+
+```bash
+curl -sS "https://<api-domain>/api/audio?page=1&limit=20"
+```
 
 ## Troubleshooting
 

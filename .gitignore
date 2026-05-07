@@ -1,0 +1,22 @@
+# Environment and secrets (never commit DB URLs or keys)
+.env
+.env.*
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.eggs/
+.docker-compose.yml 
+/backend/docker-compose.yml
+/backend/Dockerfile
+/backend/.env.example
+/backend/.env
+.env.example
+docker-compose.yml
+synthetic_dir
+speech_synthetic_approved.zip
+Data-App.code-workspace
