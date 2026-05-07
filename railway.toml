@@ -5,5 +5,5 @@
 # If you use Docker on Railway instead, point the service at Dockerfile and you can omit startCommand.
 
 [deploy]
-# Railway runs startCommand without a shell, so $PORT must be expanded inside sh -c.
-startCommand = "sh -c \"uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+# Use python run.py so PORT is read from the env (Railway often runs startCommand without a shell).
+startCommand = "python run.py"
