@@ -2,6 +2,7 @@
 import asyncio
 import csv
 import io
+import os
 from bson import ObjectId
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
 
@@ -312,7 +313,17 @@ async def _save_swahili_for_doc(
         except Exception:
             pass
 
-    if r2_enabled() and pair:
+    is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    if is_railway and not r2_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Audio storage is not configured (R2 required on Railway). "
+                "Set R2_ENDPOINT_URL, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY."
+            ),
+        )
+
+    if (r2_enabled() or is_railway) and pair:
         key_tgt, _ = pair_audio_keys(pair, oid_str, "target")
         await put_object_bytes(key_tgt, file_data)
         payload["r2_key_target"] = key_tgt

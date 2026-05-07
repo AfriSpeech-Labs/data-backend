@@ -32,6 +32,28 @@ def pair_audio_keys(
     return key, sfx
 
 
+def synth_audio_keys(
+    pair: dict,
+    item_id_str: str,
+    side: str,
+) -> tuple[str, str]:
+    """Return (r2_key, filename_suffix) for synth-pairs audio.
+
+    Uses a stable prefix to avoid collisions with parallel dataset audio.
+    """
+    slug = pair["slug"]
+    if side == "source":
+        folder = pair["audio_folder_source"]
+        sfx = pair["file_suffix_source"]
+    elif side == "target":
+        folder = pair["audio_folder_target"]
+        sfx = pair["file_suffix_target"]
+    else:
+        raise ValueError("side must be source or target")
+    key = f"{slug}/synth/audio/{folder}/{item_id_str}_{sfx}.wav"
+    return key, sfx
+
+
 async def get_pair_by_id(pair_id: ObjectId | str) -> dict | None:
     db = get_database()
     oid = pair_id if isinstance(pair_id, ObjectId) else ObjectId(pair_id)

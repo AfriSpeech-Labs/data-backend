@@ -108,7 +108,10 @@ When configured, audio can be written to R2 instead of GridFS.
 Notes:
 
 - R2 code uses `aioboto3` at runtime (imported only when R2 is used).
-- There is a helper script to migrate existing GridFS audio to R2: `scripts/migrate_gridfs_to_r2.py`.
+- **On Railway**: R2 is **required** (the backend fails fast if R2 is not configured) so MongoDB is used for **metadata/users** only.
+- Migration scripts:
+  - Parallel dataset (collection `speech_parallel`): `scripts/migrate_gridfs_to_r2.py`
+  - Synthetic pairs (collection `parallel_synth_pairs` by default): `scripts/migrate_synth_gridfs_to_r2.py`
 
 ### Language pairs
 
@@ -214,7 +217,7 @@ The repo includes a `[Dockerfile](Dockerfile)` that installs `ffmpeg` (needed fo
 
 Set these in the Railway service **Variables**.
 
-**Required**
+#### Required
 
 - `MONGODB_URI` = your external Mongo URL (`mongodb://...` or `mongodb+srv://...`)
 - `DATABASE_NAME` = `speech_parallel` (or your preferred name)
@@ -223,7 +226,14 @@ Set these in the Railway service **Variables**.
   - `https://<your-web-service>.up.railway.app`
 - `ADMIN_JWT_SECRET` = long random secret
 
-**Cross-domain cookies (admin-web and API are different Railway domains)**
+#### Required for audio storage (Cloudflare R2)
+
+- `R2_ENDPOINT_URL`
+- `R2_BUCKET_NAME`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+
+#### Cross-domain cookies (admin-web and API are different Railway domains)
 
 - `ADMIN_COOKIE_SECURE=true`
 - `ADMIN_COOKIE_SAMESITE=none`
@@ -249,13 +259,13 @@ After Railway assigns a domain to the API service (for example `https://<api>.up
 curl -sS https://<api-domain>/health
 ```
 
-2) Docs:
+1) Docs:
 
 ```bash
 curl -I https://<api-domain>/docs
 ```
 
-3) Admin cookie flow (run from anywhere; you should see a `set-cookie` header):
+1) Admin cookie flow (run from anywhere; you should see a `set-cookie` header):
 
 ```bash
 curl -i https://<api-domain>/api/admin/auth/login ^
@@ -263,10 +273,20 @@ curl -i https://<api-domain>/api/admin/auth/login ^
   -d "{\"email\":\"you@example.com\",\"password\":\"your-password\"}"
 ```
 
-4) Public list:
+1) Public list:
 
 ```bash
 curl -sS "https://<api-domain>/api/audio?page=1&limit=20"
+```
+
+### Migration (move existing audio from GridFS to R2)
+
+Run these once (from `backend/` with venv active) after you’ve set `MONGODB_URI` and all `R2_*` variables:
+
+```bash
+set PYTHONPATH=.
+python scripts/migrate_gridfs_to_r2.py
+python scripts/migrate_synth_gridfs_to_r2.py
 ```
 
 ## Troubleshooting
@@ -274,4 +294,3 @@ curl -sS "https://<api-domain>/api/audio?page=1&limit=20"
 - **Admin login returns 503**: `ADMIN_JWT_SECRET` is not set.
 - **Browser requests fail with CORS + cookies**: ensure `CORS_ORIGINS` is an exact origin list (not `*`), and cookie `SameSite`/`Secure` are correct for your deployment topology.
 - **OpenAPI “Failed to fetch” on CSV imports**: bulk CSV endpoints do per-row TTS and can run for minutes; browsers/proxies may time out. Use smaller `max_rows` in `/docs`, or use scripts / curl with a long timeout.
-

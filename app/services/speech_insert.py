@@ -1,5 +1,6 @@
 """Insert speech_parallel documents from English WAV bytes + optional texts."""
 import io
+import os
 
 from bson import ObjectId
 
@@ -48,7 +49,14 @@ async def insert_item_from_english_wav(
         "text_swahili": ts,
     }
 
-    if r2_enabled():
+    is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    if is_railway and not r2_enabled():
+        raise RuntimeError(
+            "R2 is required on Railway. Set R2_ENDPOINT_URL, R2_BUCKET_NAME, "
+            "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY."
+        )
+
+    if r2_enabled() or is_railway:
         key_src, _ = pair_audio_keys(pair, id_str, "source")
         await put_object_bytes(key_src, wav_bytes)
         doc["r2_key_source"] = key_src

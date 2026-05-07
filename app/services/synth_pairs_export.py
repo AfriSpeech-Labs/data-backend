@@ -68,6 +68,8 @@ async def build_synth_export_zip(
     if not uncapped:
         if limit < 1 or limit > EXPORT_MAX_LIMIT:
             limit = EXPORT_MAX_LIMIT
+    from app.r2_storage import get_object_bytes, r2_enabled
+
     gridfs = get_gridfs_synth()
     q = _synth_export_query(approved_only, validation_status, status)
     q = merge_synth_pair_scope(q, pair_oid)
@@ -83,17 +85,42 @@ async def build_synth_export_zip(
             id_str = serialize_id(doc["_id"])
             en_rel = zip_path_english_wav(id_str)
             sw_rel = zip_path_swahili_wav(id_str)
-            try:
-                grid_out = await gridfs.open_download_stream(doc["audio_english"])
-                en_data = await grid_out.read()
+            # English
+            en_data: bytes | None = None
+            key_en = doc.get("r2_key_source")
+            if key_en and r2_enabled():
+                try:
+                    en_data = await get_object_bytes(key_en)
+                except Exception:
+                    en_data = None
+            if en_data is None:
+                try:
+                    grid_out = await gridfs.open_download_stream(doc["audio_english"])
+                    en_data = await grid_out.read()
+                except Exception:
+                    en_data = None
+            if en_data:
                 zf.writestr(en_rel, en_data)
-            except Exception:
+            else:
                 en_rel = ""
-            try:
-                grid_out = await gridfs.open_download_stream(doc["audio_swahili"])
-                sw_data = await grid_out.read()
+
+            # Swahili
+            sw_data: bytes | None = None
+            key_sw = doc.get("r2_key_target")
+            if key_sw and r2_enabled():
+                try:
+                    sw_data = await get_object_bytes(key_sw)
+                except Exception:
+                    sw_data = None
+            if sw_data is None:
+                try:
+                    grid_out = await gridfs.open_download_stream(doc["audio_swahili"])
+                    sw_data = await grid_out.read()
+                except Exception:
+                    sw_data = None
+            if sw_data:
                 zf.writestr(sw_rel, sw_data)
-            except Exception:
+            else:
                 sw_rel = ""
             metadata_list.append({
                 "id": id_str,

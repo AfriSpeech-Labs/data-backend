@@ -121,15 +121,25 @@ async def get_synth_pair_stats(
 
 async def stream_english(id: str) -> StreamingResponse:
     doc = await get_synth_doc(id)
-    gridfs = get_gridfs_synth()
-    file_id = doc.get("audio_english")
-    if not file_id:
-        raise HTTPException(status_code=404, detail="English audio not found")
-    try:
-        grid_out = await gridfs.open_download_stream(file_id)
-        data = await grid_out.read()
-    except Exception:
-        raise HTTPException(status_code=404, detail="Audio file not found")
+    from app.r2_storage import get_object_bytes, r2_enabled
+
+    key = doc.get("r2_key_source")
+    data: bytes | None = None
+    if key and r2_enabled():
+        try:
+            data = await get_object_bytes(key)
+        except Exception:
+            data = None
+    if data is None:
+        gridfs = get_gridfs_synth()
+        file_id = doc.get("audio_english")
+        if not file_id:
+            raise HTTPException(status_code=404, detail="English audio not found")
+        try:
+            grid_out = await gridfs.open_download_stream(file_id)
+            data = await grid_out.read()
+        except Exception:
+            raise HTTPException(status_code=404, detail="Audio file not found")
     return StreamingResponse(
         io.BytesIO(data),
         media_type="audio/wav",
@@ -139,15 +149,25 @@ async def stream_english(id: str) -> StreamingResponse:
 
 async def stream_swahili(id: str) -> StreamingResponse:
     doc = await get_synth_doc(id)
-    gridfs = get_gridfs_synth()
-    file_id = doc.get("audio_swahili")
-    if not file_id:
-        raise HTTPException(status_code=404, detail="Swahili audio not found")
-    try:
-        grid_out = await gridfs.open_download_stream(file_id)
-        data = await grid_out.read()
-    except Exception:
-        raise HTTPException(status_code=404, detail="Audio file not found")
+    from app.r2_storage import get_object_bytes, r2_enabled
+
+    key = doc.get("r2_key_target")
+    data: bytes | None = None
+    if key and r2_enabled():
+        try:
+            data = await get_object_bytes(key)
+        except Exception:
+            data = None
+    if data is None:
+        gridfs = get_gridfs_synth()
+        file_id = doc.get("audio_swahili")
+        if not file_id:
+            raise HTTPException(status_code=404, detail="Swahili audio not found")
+        try:
+            grid_out = await gridfs.open_download_stream(file_id)
+            data = await grid_out.read()
+        except Exception:
+            raise HTTPException(status_code=404, detail="Audio file not found")
     return StreamingResponse(
         io.BytesIO(data),
         media_type="audio/wav",

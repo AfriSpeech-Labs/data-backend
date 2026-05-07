@@ -1,4 +1,5 @@
 """MongoDB and GridFS connection."""
+import os
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from app.config import settings
 
@@ -27,6 +28,16 @@ def get_gridfs_synth():
 
 async def connect_db():
     global client, gridfs_bucket, gridfs_synth_bucket
+    # On Railway (production), we require Cloudflare R2 for audio bytes storage.
+    # MongoDB remains the metadata/users store.
+    if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+        from app.r2_storage import r2_enabled
+
+        if not r2_enabled():
+            raise RuntimeError(
+                "Cloudflare R2 is required on Railway. Set R2_ENDPOINT_URL, "
+                "R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY."
+            )
     client = AsyncIOMotorClient(settings.mongodb_uri)
     db = client[settings.database_name]
     gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name=settings.gridfs_bucket)
