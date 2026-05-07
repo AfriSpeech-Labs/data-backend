@@ -1,0 +1,8 @@
+# Railway: API service with Root Directory = `backend`.
+# Python: Nixpacks installs from requirements.txt. Env vars go in Railway Variables
+# (MONGODB_URI, CORS_ORIGINS, ADMIN_*, R2_*, etc.). R2 is required when deployed on Railway.
+#
+# If you use Docker on Railway instead, point the service at Dockerfile and you can omit startCommand.
+
+[deploy]
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
