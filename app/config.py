@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     # Bidirectional TTS synth module (parallel_synth_pairs + separate GridFS bucket)
     synth_pairs_collection: str = "parallel_synth_pairs"
     synth_pairs_gridfs_bucket: str = "audio_synth"
+    # Parallel text-only corpus (e.g. English–Kom), separate from speech_parallel audio docs.
+    parallel_text_corpus_collection: str = "parallel_text_corpus"
     # Swahili engine: only "edge" is implemented; "mms" reserved for future worker
     synth_sw_engine: str = "edge"
     synth_augment_enabled: bool = False

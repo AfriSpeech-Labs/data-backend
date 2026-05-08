@@ -4,7 +4,7 @@ This folder contains the FastAPI backend for the Speech Parallel Data App.
 
 - Stores metadata in MongoDB and audio either in **MongoDB GridFS** (default) or **Cloudflare R2** (optional).
 - Provides **public/contributor** APIs for listing English clips, submitting Swahili audio, and batch-of-25 workflows.
-- Provides **admin** APIs for login, dataset exports (capped + full), synthetic TTS pair QA, language-pair management, and contributor-user management.
+- Provides **admin** APIs for login, dataset exports (capped + full), synthetic TTS pair QA, **parallel text corpus** (text-only lines per language pair), language-pair management, and contributor-user management.
 
 If you’re looking for the full monorepo overview (web/admin-web/mobile/scripts), see the project root `[README.md](../README.md)`.
 
@@ -119,6 +119,39 @@ The backend supports multiple language pairs; many endpoints accept an optional 
 
 - `DEFAULT_LANGUAGE_PAIR_SLUG` (default `swahili-english`)
 
+### Parallel text corpus (e.g. English–Kom)
+
+Text-only parallel lines live in MongoDB collection **`parallel_text_corpus`** (override with `PARALLEL_TEXT_CORPUS_COLLECTION`). They are separate from **`speech_parallel`** (audio workflow).
+
+1. **Create a pair** (admin cookie): `POST /api/admin/language-pairs` with e.g. slug `english-kom`, `display_name` `English–Kom`, and sensible `audio_folder_*` / `file_suffix_*` if you may record audio later (`english` / `kom`, suffixes `en` / `km`).
+2. Note the returned **`id`** — use it as **`pair_id`** for imports.
+
+**CSV example** (column names are configurable via query params; defaults `english` and `kom`):
+
+```text
+english,kom
+Hello.,Mbha.
+```
+
+**Admin API** (requires admin cookie):
+
+- `POST /api/admin/text-corpus/bulk-csv` — multipart `file`; query: **`pair_id`** (required), `max_rows` (default 50, max 200), `source_column`, `target_column`
+- `GET /api/admin/text-corpus?pair_id=...&page=1&limit=20` — optional `q=` substring search on source/target
+- `GET /api/admin/text-corpus/stats` — global totals and per-pair counts; optional `pair_id` for one pair’s total only
+
+**Chunked CLI** (same auth as synth import):
+
+```bash
+python scripts/import_text_corpus_csv.py --url https://your-api.example.com ^
+  --pair-id YOUR_LANGUAGE_PAIR_OBJECT_ID ^
+  --file path/to/corpus.csv ^
+  --chunk-rows 50 ^
+  --source-column english ^
+  --target-column kom
+```
+
+Set `ADMIN_SESSION` or `--cookie` with `admin_session=...`.
+
 ## Key API routes
 
 The API is assembled in `[app/main.py](app/main.py)`.
@@ -180,6 +213,12 @@ Synthetic TTS pairs (QA + export):
 - `GET /api/admin/synth-pairs/{id}/detail`
 - `GET /api/admin/synth-pairs/{id}/english|swahili` (stream)
 - `GET /api/admin/synth-pairs/export` (ZIP export; capped)
+
+Parallel text corpus (text-only; admin):
+
+- `POST /api/admin/text-corpus/bulk-csv` (`pair_id` required)
+- `GET /api/admin/text-corpus` (`pair_id` required)
+- `GET /api/admin/text-corpus/stats`
 
 Admin management:
 
