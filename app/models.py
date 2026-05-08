@@ -108,3 +108,34 @@ class SynthPairStatsResponse(BaseModel):
 class SynthPairValidationBody(BaseModel):
     decision: Literal["approve", "reject"]
     note: str = ""
+
+
+# --- Parallel text corpus (text-only parallel lines per language pair) ---
+
+
+class TextCorpusItemResponse(BaseModel):
+    id: str
+    language_pair_id: str
+    text_source: str
+    text_target: str
+    created_at: datetime
+    source: Optional[str] = None
+
+
+class TextCorpusListResponse(BaseModel):
+    items: list[TextCorpusItemResponse]
+    total: int
+    page: int
+    limit: int
+
+
+class TextCorpusPairCount(BaseModel):
+    pair_id: str
+    count: int
+
+
+class TextCorpusStatsResponse(BaseModel):
+    """Global total and per-pair counts for parallel_text_corpus."""
+
+    total: int
+    by_pair: list[TextCorpusPairCount] = Field(default_factory=list)

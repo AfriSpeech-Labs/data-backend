@@ -58,6 +58,11 @@ async def connect_db():
     await db[LP_COL].create_index("slug", unique=True)
     await db["contributor_users"].create_index("phone_e164", unique=True)
     try:
+        tcoll = settings.parallel_text_corpus_collection
+        await db[tcoll].create_index([("language_pair_id", 1), ("_id", 1)])
+    except Exception:
+        pass
+    try:
         await db["speech_parallel"].create_index([("pair_id", 1), ("_id", 1)])
         await db["batch_claims"].create_index(
             [("pair_id", 1), ("batch_index", 1)], unique=True
