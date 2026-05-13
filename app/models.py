@@ -117,9 +117,14 @@ class TextCorpusItemResponse(BaseModel):
     id: str
     language_pair_id: str
     text_source: str
-    text_target: str
+    text_target: Optional[str] = None
     created_at: datetime
     source: Optional[str] = None
+    task_type: Optional[str] = None
+    status: Optional[str] = None
+    source_language: Optional[str] = None
+    target_language: Optional[str] = None
+    submitted_at: Optional[datetime] = None
 
 
 class TextCorpusListResponse(BaseModel):
@@ -139,3 +144,27 @@ class TextCorpusStatsResponse(BaseModel):
 
     total: int
     by_pair: list[TextCorpusPairCount] = Field(default_factory=list)
+
+
+class TextTranslationStatsResponse(BaseModel):
+    """Counts for source-only text translation tasks."""
+
+    total: int
+    pending: int
+    submitted: int
+
+
+class TextTranslationItemResponse(BaseModel):
+    id: str
+    language_pair_id: str
+    status: str
+    text_source: str
+    text_target: Optional[str] = None
+    source_language: str = "kom"
+    target_language: str = "english"
+    created_at: datetime
+    submitted_at: Optional[datetime] = None
+
+
+class TextTranslationSubmitBody(BaseModel):
+    text_target: str = Field(min_length=1)

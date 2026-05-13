@@ -60,6 +60,8 @@ async def connect_db():
     try:
         tcoll = settings.parallel_text_corpus_collection
         await db[tcoll].create_index([("language_pair_id", 1), ("_id", 1)])
+        await db[tcoll].create_index([("language_pair_id", 1), ("task_type", 1), ("_id", 1)])
+        await db[tcoll].create_index([("language_pair_id", 1), ("task_type", 1), ("status", 1)])
     except Exception:
         pass
     try:
@@ -68,6 +70,13 @@ async def connect_db():
             [("pair_id", 1), ("batch_index", 1)], unique=True
         )
         await db["batch_completions"].create_index(
+            [("pair_id", 1), ("actor_ref", 1), ("batch_index", 1)],
+            unique=True,
+        )
+        await db["text_batch_claims"].create_index(
+            [("pair_id", 1), ("batch_index", 1)], unique=True,
+        )
+        await db["text_batch_completions"].create_index(
             [("pair_id", 1), ("actor_ref", 1), ("batch_index", 1)],
             unique=True,
         )

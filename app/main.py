@@ -41,6 +41,8 @@ from app.routes.admin_text_corpus import router as admin_text_corpus_router
 from app.routes.audio import router as audio_router
 from app.routes.batches import router as batches_router
 from app.routes.contributor_auth import router as contributor_auth_router
+from app.routes.text_batches import router as text_batches_router
+from app.routes.text_corpus import router as text_corpus_router
 
 app = FastAPI(title="Speech Parallel Data API", version="1.0.0")
 
@@ -58,6 +60,8 @@ app.add_middleware(
 
 app.include_router(audio_router)
 app.include_router(batches_router)
+app.include_router(text_batches_router)
+app.include_router(text_corpus_router)
 app.include_router(contributor_auth_router)
 app.include_router(admin_auth_router)
 app.include_router(admin_language_pairs_router)
