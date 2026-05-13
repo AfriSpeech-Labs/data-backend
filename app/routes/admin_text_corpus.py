@@ -19,6 +19,7 @@ from app.models import (
     TextCorpusListResponse,
     TextCorpusPairCount,
     TextCorpusStatsResponse,
+    TextTranslationStatsResponse,
 )
 from app.services.language_pairs import get_pair_by_id
 
@@ -141,16 +142,123 @@ async def text_corpus_bulk_csv(
     )
 
 
+@router.post("/source-csv", response_model=BulkCsvResponse)
+async def text_corpus_source_csv(
+    file: UploadFile = File(...),
+    pair_id: str = Query(..., description="language_pairs ObjectId"),
+    max_rows: int = Query(BULK_DEFAULT_MAX, ge=1, le=BULK_HARD_CAP),
+    source_column: str = Query("kom"),
+    source_language: str = Query("kom"),
+    target_language: str = Query("english"),
+):
+    """Import source-only text rows as pending translation tasks."""
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files allowed")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid UTF-8: {e}") from e
+
+    pair_oid = await _require_pair_oid(pair_id)
+
+    reader = csv.DictReader(io.StringIO(text))
+    if reader.fieldnames is None:
+        raise HTTPException(status_code=400, detail="CSV has no header row")
+    headers_lower = {h.strip().lower(): h for h in reader.fieldnames if h}
+    src_key = source_column.strip().lower()
+    if src_key not in headers_lower:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing column '{source_column}'. Found: {list(reader.fieldnames)}",
+        )
+    col_src = headers_lower[src_key]
+
+    rows: list[tuple[int, str]] = []
+    for i, row in enumerate(reader, start=1):
+        s = (row.get(col_src) or "").strip()
+        if not s:
+            continue
+        rows.append((i, s))
+
+    if len(rows) > max_rows:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"CSV has {len(rows)} non-empty data rows; max per request is {max_rows}. "
+                f"Split into chunks of ≤{max_rows} rows (repeat header in each chunk) and POST each."
+            ),
+        )
+
+    coll = _coll()
+    created_ids: list[str] = []
+    errors: list[BulkCsvErrorItem] = []
+    now = datetime.now(timezone.utc)
+
+    for row_index, src in rows:
+        doc = {
+            "language_pair_id": pair_oid,
+            "task_type": "translation",
+            "status": "pending",
+            "text_source": src,
+            "text_target": None,
+            "source_language": source_language.strip().lower() or "kom",
+            "target_language": target_language.strip().lower() or "english",
+            "created_at": now,
+            "submitted_at": None,
+            "submitted_by_user_id": None,
+            "source": "source_only_csv",
+            "csv_row": row_index,
+        }
+        try:
+            res = await coll.insert_one(doc)
+            created_ids.append(str(res.inserted_id))
+        except Exception as e:
+            errors.append(BulkCsvErrorItem(row=row_index, detail=f"DB: {e!s}"))
+
+    return BulkCsvResponse(
+        created_ids=created_ids,
+        errors=errors,
+        processed=len(rows),
+        failed=len(errors),
+    )
+
+
+@router.get("/translation-stats", response_model=TextTranslationStatsResponse)
+async def text_translation_stats(
+    pair_id: str = Query(..., description="Filter by language_pairs ObjectId"),
+):
+    pair_oid = await _require_pair_oid(pair_id)
+    coll = _coll()
+    flt = {"language_pair_id": pair_oid, "task_type": "translation"}
+    total = await coll.count_documents(flt)
+    submitted = await coll.count_documents({**flt, "status": "submitted"})
+    pending = await coll.count_documents({**flt, "status": {"$ne": "submitted"}})
+    return TextTranslationStatsResponse(
+        total=total,
+        pending=pending,
+        submitted=submitted,
+    )
+
+
 @router.get("", response_model=TextCorpusListResponse)
 async def text_corpus_list(
     pair_id: str = Query(..., description="Filter by language_pairs ObjectId"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     q: str | None = Query(None, description="Optional case-insensitive substring on source or target"),
+    task_type: str | None = Query(None, description="Optional task type filter, e.g. translation"),
+    status: str | None = Query(None, description="Optional status filter, e.g. pending or submitted"),
 ):
     pair_oid = await _require_pair_oid(pair_id)
     coll = _coll()
     flt: dict = {"language_pair_id": pair_oid}
+    if task_type and task_type.strip():
+        flt["task_type"] = task_type.strip()
+    if status and status.strip():
+        flt["status"] = status.strip()
     if q and q.strip():
         pat = {"$regex": re.escape(q.strip()), "$options": "i"}
         flt["$or"] = [{"text_source": pat}, {"text_target": pat}]
@@ -165,9 +273,14 @@ async def text_corpus_list(
                 id=str(doc["_id"]),
                 language_pair_id=str(doc["language_pair_id"]),
                 text_source=str(doc.get("text_source", "")),
-                text_target=str(doc.get("text_target", "")),
+                text_target=doc.get("text_target"),
                 created_at=doc.get("created_at") or datetime.now(timezone.utc),
                 source=doc.get("source"),
+                task_type=doc.get("task_type"),
+                status=doc.get("status"),
+                source_language=doc.get("source_language"),
+                target_language=doc.get("target_language"),
+                submitted_at=doc.get("submitted_at"),
             )
         )
     return TextCorpusListResponse(items=items, total=total, page=page, limit=limit)
