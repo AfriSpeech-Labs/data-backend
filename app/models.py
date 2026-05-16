@@ -168,3 +168,20 @@ class TextTranslationItemResponse(BaseModel):
 
 class TextTranslationSubmitBody(BaseModel):
     text_target: str = Field(min_length=1)
+
+
+class AdminBatchClaimItem(BaseModel):
+    workflow: Literal["audio", "text"]
+    pair_id: str
+    batch_index: int
+    claimed_at: datetime
+    contributor_user_id: Optional[str] = None
+    contributor_phone: Optional[str] = None
+    session_id: Optional[str] = None
+    submitted_count: int
+    total: int = 25
+    status: str
+
+
+class AdminBatchClaimsListResponse(BaseModel):
+    items: list[AdminBatchClaimItem]

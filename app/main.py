@@ -33,6 +33,7 @@ from app.db import connect_db, close_db
 from app.docs_otp import DocsOTPMiddleware, get_verify_router, init_docs_otp
 from app.routes.admin_audio import router as admin_audio_router
 from app.routes.admin_auth import router as admin_auth_router
+from app.routes.admin_batch_claims import router as admin_batch_claims_router
 from app.routes.admin_contributors import router as admin_contributors_router
 from app.routes.admin_datasets import router as admin_datasets_router
 from app.routes.admin_language_pairs import router as admin_language_pairs_router
@@ -66,6 +67,7 @@ app.include_router(contributor_auth_router)
 app.include_router(admin_auth_router)
 app.include_router(admin_language_pairs_router)
 app.include_router(admin_contributors_router)
+app.include_router(admin_batch_claims_router)
 app.include_router(admin_audio_router)
 app.include_router(admin_datasets_router)
 app.include_router(admin_synth_pairs_router)
