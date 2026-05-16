@@ -21,10 +21,10 @@ def _serialize_task(doc: dict) -> TextTranslationItemResponse:
         id=str(doc["_id"]),
         language_pair_id=str(doc["language_pair_id"]),
         status=doc.get("status", "pending"),
-        text_source=doc.get("text_source", ""),
+        text_source=str(doc.get("text_source") or ""),
         text_target=doc.get("text_target"),
-        source_language=doc.get("source_language", "kom"),
-        target_language=doc.get("target_language", "english"),
+        source_language=doc.get("source_language", "english"),
+        target_language=doc.get("target_language", "kom"),
         created_at=doc.get("created_at") or datetime.now(timezone.utc),
         submitted_at=doc.get("submitted_at"),
     )
@@ -69,13 +69,13 @@ async def _save_translation(
             detail="Already submitted. Use PUT /api/text-corpus/{id}/translation to replace.",
         )
 
-    text_target = body.text_target.strip()
-    if not text_target:
-        raise HTTPException(status_code=400, detail="text_target is required")
+    text_source = body.text_source.strip()
+    if not text_source:
+        raise HTTPException(status_code=400, detail="text_source is required")
 
     now = datetime.now(timezone.utc)
     payload: dict = {
-        "text_target": text_target,
+        "text_source": text_source,
         "status": "submitted",
         "submitted_at": now,
     }
