@@ -15,8 +15,10 @@ from app.models import (
     MyBatchesOverviewResponse,
     MyCurrentBatchResponse,
     TextTranslationItemResponse,
+    TextTranslationStatsResponse,
 )
 from app.services.language_pairs import resolve_pair_id
+from app.services.text_corpus_read import fetch_text_translation_stats
 
 router = APIRouter(prefix="/api/text-batches", tags=["text-batches"])
 CLAIMS_COLLECTION = "text_batch_claims"
@@ -57,6 +59,16 @@ async def _pair_scope(
 
 async def _count_pair(pair_oid: ObjectId) -> int:
     return await _coll().count_documents(_task_filter(pair_oid))
+
+
+@router.get("/stats", response_model=TextTranslationStatsResponse)
+async def text_batch_stats(
+    pair_id: str | None = Query(None, description="Filter by language pair ObjectId"),
+    contrib: ContributorIdentity | None = Depends(optional_contributor),
+):
+    """Total, submitted, and pending counts for translation tasks in this pair."""
+    eff = contrib.pair_id if contrib else pair_id
+    return await fetch_text_translation_stats(eff)
 
 
 async def _submitted_count_for_batch(pair_oid: ObjectId, batch_index: int) -> int:

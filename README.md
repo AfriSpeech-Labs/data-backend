@@ -178,6 +178,16 @@ Batch-of-25 flow:
 - `GET /api/batches/my-overview`
 - `GET /api/batches/{batch_index}/items`
 
+Text translation batch-of-25 flow:
+
+- `GET /api/text-batches/stats` (translation task totals for contributor’s pair)
+- `GET /api/text-batches` (preview unclaimed batches)
+- `POST /api/text-batches/{batch_index}/claim`
+- `GET /api/text-batches/current`
+- `GET /api/text-batches/my-overview`
+- `GET /api/text-batches/{batch_index}/items`
+- `POST /api/text-corpus/{id}/translation` and `PUT` (submit English for a task)
+
 Contributor login (optional):
 
 - `POST /api/contributor/auth/login`
@@ -219,6 +229,7 @@ Parallel text corpus (text-only; admin):
 - `POST /api/admin/text-corpus/bulk-csv` (`pair_id` required)
 - `GET /api/admin/text-corpus` (`pair_id` required)
 - `GET /api/admin/text-corpus/stats`
+- `GET /api/admin/text-corpus/translation-stats` (`pair_id` required)
 
 Admin management:
 

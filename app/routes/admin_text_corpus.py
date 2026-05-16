@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services.language_pairs import get_pair_by_id
 from app.services.pair_delete import clear_text_corpus_for_pair_oid
+from app.services.text_corpus_read import fetch_text_translation_stats
 
 router = APIRouter(
     prefix="/api/admin/text-corpus",
@@ -261,17 +262,8 @@ async def text_corpus_source_csv(
 async def text_translation_stats(
     pair_id: str = Query(..., description="Filter by language_pairs ObjectId"),
 ):
-    pair_oid = await _require_pair_oid(pair_id)
-    coll = _coll()
-    flt = {"language_pair_id": pair_oid, "task_type": "translation"}
-    total = await coll.count_documents(flt)
-    submitted = await coll.count_documents({**flt, "status": "submitted"})
-    pending = await coll.count_documents({**flt, "status": {"$ne": "submitted"}})
-    return TextTranslationStatsResponse(
-        total=total,
-        pending=pending,
-        submitted=submitted,
-    )
+    await _require_pair_oid(pair_id)
+    return await fetch_text_translation_stats(pair_id)
 
 
 @router.get("", response_model=TextCorpusListResponse)
