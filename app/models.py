@@ -160,14 +160,14 @@ class TextTranslationItemResponse(BaseModel):
     status: str
     text_source: str
     text_target: Optional[str] = None
-    source_language: str = "kom"
-    target_language: str = "english"
+    source_language: str = "english"
+    target_language: str = "kom"
     created_at: datetime
     submitted_at: Optional[datetime] = None
 
 
 class TextTranslationSubmitBody(BaseModel):
-    text_target: str = Field(min_length=1)
+    text_source: str = Field(min_length=1)
 
 
 class AdminBatchClaimItem(BaseModel):
@@ -185,3 +185,25 @@ class AdminBatchClaimItem(BaseModel):
 
 class AdminBatchClaimsListResponse(BaseModel):
     items: list[AdminBatchClaimItem]
+
+
+class LanguagePairDeleteCounts(BaseModel):
+    speech_parallel: int = 0
+    batch_claims: int = 0
+    batch_completions: int = 0
+    parallel_text_corpus: int = 0
+    text_batch_claims: int = 0
+    text_batch_completions: int = 0
+    parallel_synth_pairs: int = 0
+    gridfs_files: int = 0
+    r2_objects: int = 0
+    contributors: int = 0
+
+
+class LanguagePairDeleteResponse(BaseModel):
+    ok: bool = True
+    pair_id: str
+    slug: str
+    clear_data: bool
+    deleted: LanguagePairDeleteCounts
+    language_pair_deleted: int = 0
