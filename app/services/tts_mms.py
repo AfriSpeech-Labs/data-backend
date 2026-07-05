@@ -21,6 +21,7 @@ def mms_import_diagnostics() -> dict:
         "available": False,
         "torch": None,
         "transformers": None,
+        "sentencepiece": None,
         "error": None,
     }
     try:
@@ -35,9 +36,17 @@ def mms_import_diagnostics() -> dict:
         from transformers import VitsModel  # noqa: F401
 
         out["transformers"] = transformers.__version__
-        out["available"] = True
     except ImportError as e:
         out["error"] = f"transformers: {e}"
+        return out
+    try:
+        import sentencepiece
+
+        out["sentencepiece"] = sentencepiece.__version__
+    except ImportError as e:
+        out["error"] = f"sentencepiece: {e}"
+        return out
+    out["available"] = True
     return out
 
 
@@ -52,7 +61,7 @@ def _load_model(model_id: str) -> tuple[Any, Any]:
             "MMS TTS requires torch and transformers. "
             "Install optional deps: pip install torch transformers scipy"
         ) from e
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
     model = VitsModel.from_pretrained(model_id)
     model.eval()
     _model_cache[model_id] = (model, tokenizer)

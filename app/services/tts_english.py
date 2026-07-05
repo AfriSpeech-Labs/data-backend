@@ -1,6 +1,7 @@
 """Generate English WAV from text using TTS. Prefers edge-tts (no system deps); fallback pyttsx3."""
 import io
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -17,12 +18,28 @@ def generate_wav_edge_tts(text: str, voice: str = EDGE_VOICE) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         mp3_path = f.name
     try:
-        communicate = edge_tts.Communicate(text, voice)
-        communicate.save_sync(mp3_path)
-        seg = AudioSegment.from_mp3(mp3_path)
-        buf = io.BytesIO()
-        seg.export(buf, format="wav")
-        return buf.getvalue()
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                communicate = edge_tts.Communicate(text, voice)
+                communicate.save_sync(mp3_path)
+                if Path(mp3_path).stat().st_size == 0:
+                    raise RuntimeError(
+                        "No audio was received. Please verify that your parameters are correct."
+                    )
+                seg = AudioSegment.from_mp3(mp3_path)
+                buf = io.BytesIO()
+                seg.export(buf, format="wav")
+                return buf.getvalue()
+            except Exception as e:
+                last_err = e
+                if "no audio was received" in str(e).lower() and attempt < 2:
+                    time.sleep(1 + attempt)
+                    continue
+                raise
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError("Edge TTS failed without a specific error")
     finally:
         Path(mp3_path).unlink(missing_ok=True)
 
