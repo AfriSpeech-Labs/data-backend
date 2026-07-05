@@ -15,28 +15,34 @@ def generate_wav_edge_tts(text: str, voice: str = EDGE_VOICE) -> bytes:
     from pydub import AudioSegment
 
     voice = (voice or EDGE_VOICE).strip() or EDGE_VOICE
+    voices_to_try = [voice]
+    if voice != EDGE_VOICE:
+        voices_to_try.append(EDGE_VOICE)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         mp3_path = f.name
     try:
         last_err: Exception | None = None
-        for attempt in range(3):
-            try:
-                communicate = edge_tts.Communicate(text, voice)
-                communicate.save_sync(mp3_path)
-                if Path(mp3_path).stat().st_size == 0:
-                    raise RuntimeError(
-                        "No audio was received. Please verify that your parameters are correct."
-                    )
-                seg = AudioSegment.from_mp3(mp3_path)
-                buf = io.BytesIO()
-                seg.export(buf, format="wav")
-                return buf.getvalue()
-            except Exception as e:
-                last_err = e
-                if "no audio was received" in str(e).lower() and attempt < 2:
-                    time.sleep(1 + attempt)
-                    continue
-                raise
+        for v in voices_to_try:
+            for attempt in range(5):
+                try:
+                    communicate = edge_tts.Communicate(text, v)
+                    communicate.save_sync(mp3_path)
+                    if Path(mp3_path).stat().st_size == 0:
+                        raise RuntimeError(
+                            "No audio was received. Please verify that your parameters are correct."
+                        )
+                    seg = AudioSegment.from_mp3(mp3_path)
+                    buf = io.BytesIO()
+                    seg.export(buf, format="wav")
+                    return buf.getvalue()
+                except Exception as e:
+                    last_err = e
+                    if "no audio was received" in str(e).lower() and attempt < 4:
+                        time.sleep(min(2 ** attempt, 8))
+                        continue
+                    if v != voices_to_try[-1]:
+                        break
+                    raise
         if last_err is not None:
             raise last_err
         raise RuntimeError("Edge TTS failed without a specific error")

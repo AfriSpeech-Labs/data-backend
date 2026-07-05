@@ -6,6 +6,15 @@ from typing import Any
 
 _model_cache: dict[str, tuple[Any, Any]] = {}
 
+# Hub repos with missing/broken tokenizer configs → load tokenizer from donor MMS checkpoint.
+_TOKENIZER_FALLBACK_FOR_MODEL: Final[dict[str, str]] = {
+    "waxal-benchmarking/mms-tts-twi": "facebook/mms-tts-aka",
+}
+# Empty or stub Hub repos → use a working MMS checkpoint instead.
+_EFFECTIVE_MMS_MODEL: Final[dict[str, str]] = {
+    "waxal-benchmarking/mms-tts-twi": "facebook/mms-tts-aka",
+}
+
 
 class MmsTtsNotInstalledError(RuntimeError):
     """Raised when torch/transformers are not installed."""
@@ -50,19 +59,41 @@ def mms_import_diagnostics() -> dict:
     return out
 
 
+def _load_tokenizer(model_id: str):
+    from transformers import AutoTokenizer
+
+    try:
+        return AutoTokenizer.from_pretrained(model_id, use_fast=False)
+    except Exception as primary_err:
+        fallback_id = _TOKENIZER_FALLBACK_FOR_MODEL.get(model_id)
+        if not fallback_id:
+            raise primary_err
+        return AutoTokenizer.from_pretrained(fallback_id, use_fast=False)
+
+
 def _load_model(model_id: str) -> tuple[Any, Any]:
+    model_id = _EFFECTIVE_MMS_MODEL.get(model_id, model_id)
     if model_id in _model_cache:
         return _model_cache[model_id]
     try:
         import torch
-        from transformers import AutoTokenizer, VitsModel
+        from transformers import VitsModel
     except ImportError as e:
         raise MmsTtsNotInstalledError(
             "MMS TTS requires torch and transformers. "
             "Install optional deps: pip install torch transformers scipy"
         ) from e
-    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
-    model = VitsModel.from_pretrained(model_id)
+    tokenizer = _load_tokenizer(model_id)
+    try:
+        model = VitsModel.from_pretrained(model_id)
+    except OSError as e:
+        fallback_id = _TOKENIZER_FALLBACK_FOR_MODEL.get(model_id)
+        if not fallback_id:
+            raise ValueError(
+                f"MMS model '{model_id}' has no weights on HuggingFace Hub. "
+                f"Set tts_target_mms_model on the language pair (e.g. {fallback_id or 'facebook/mms-tts-aka'})."
+            ) from e
+        model = VitsModel.from_pretrained(fallback_id)
     model.eval()
     _model_cache[model_id] = (model, tokenizer)
     return model, tokenizer

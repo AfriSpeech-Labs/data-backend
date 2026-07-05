@@ -24,8 +24,9 @@ SWAHILI_VOICES: Final[list[tuple[str, str]]] = [
 ]
 
 # audio_folder_target (lower) -> default HuggingFace MMS model id
+# Twi uses Meta MMS Akan (aka) — waxal-benchmarking/mms-tts-twi is a README-only stub on Hub.
 TARGET_MMS_PRESETS: Final[dict[str, str]] = {
-    "twi": "waxal-benchmarking/mms-tts-twi",
+    "twi": "facebook/mms-tts-aka",
     "akan": "facebook/mms-tts-aka",
     "aka": "facebook/mms-tts-aka",
     "fante": "facebook/mms-tts-aka",
