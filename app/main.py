@@ -88,4 +88,6 @@ async def shutdown():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    from app.services.tts_mms import mms_import_diagnostics
+
+    return {"status": "ok", "mms_tts": mms_import_diagnostics()}

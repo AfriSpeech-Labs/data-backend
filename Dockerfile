@@ -3,19 +3,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# ffmpeg for pydub (mp3 -> wav). Optional: espeak for pyttsx3 fallback.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# ffmpeg for pydub; libgomp1 for torch CPU runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies (CPU torch wheel — avoids huge CUDA packages on Railway).
-COPY requirements.txt .
-RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+COPY requirements.txt requirements-mms.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-mms.txt \
+    && python -c "import torch; from transformers import VitsModel; print('MMS deps OK', torch.__version__)"
 
-# Application code
 COPY app/ ./app/
 COPY run.py .
 
-# Run the API (PORT from env; run.py avoids shell expansion issues on Railway)
 EXPOSE 8000
 ENV PORT=8000
 CMD ["python", "run.py"]

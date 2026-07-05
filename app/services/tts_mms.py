@@ -12,13 +12,33 @@ class MmsTtsNotInstalledError(RuntimeError):
 
 
 def mms_available() -> bool:
-    try:
-        import torch  # noqa: F401
-        from transformers import AutoTokenizer, VitsModel  # noqa: F401
+    return mms_import_diagnostics()["available"]
 
-        return True
-    except ImportError:
-        return False
+
+def mms_import_diagnostics() -> dict:
+    """Report whether MMS deps import and why not (for /health debugging)."""
+    out: dict = {
+        "available": False,
+        "torch": None,
+        "transformers": None,
+        "error": None,
+    }
+    try:
+        import torch
+
+        out["torch"] = torch.__version__
+    except ImportError as e:
+        out["error"] = f"torch: {e}"
+        return out
+    try:
+        import transformers
+        from transformers import VitsModel  # noqa: F401
+
+        out["transformers"] = transformers.__version__
+        out["available"] = True
+    except ImportError as e:
+        out["error"] = f"transformers: {e}"
+    return out
 
 
 def _load_model(model_id: str) -> tuple[Any, Any]:
