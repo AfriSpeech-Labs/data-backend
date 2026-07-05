@@ -21,20 +21,11 @@ def serialize_id(oid: ObjectId) -> str:
 def merge_synth_pair_scope(
     base_match: dict, pair_oid: ObjectId | None
 ) -> dict:
-    """When a pair is selected, include rows tagged to that pair and legacy rows
-    without ``language_pair_id`` (shared until imports are tagged per pair).
-    """
+    """When a pair is selected, return only rows tagged to that pair."""
     if pair_oid is None:
         return dict(base_match)
-    scope = {
-        "$or": [
-            {"language_pair_id": pair_oid},
-            {"language_pair_id": {"$exists": False}},
-        ]
-    }
-    if not base_match:
-        return scope
-    return {"$and": [base_match, scope]}
+    scoped = {**base_match, "language_pair_id": pair_oid}
+    return scoped
 
 
 async def get_synth_doc(id: str) -> dict:
@@ -76,6 +67,8 @@ async def list_synth_pairs(
                 text_swahili=doc.get("text_swahili"),
                 validation_status=doc.get("validation_status", "pending"),
                 tts_english_voice=doc.get("tts_english_voice"),
+                tts_english_engine=doc.get("tts_english_engine", "edge"),
+                gender_en=doc.get("gender_en"),
                 tts_swahili_voice=doc.get("tts_swahili_voice"),
                 tts_swahili_engine=doc.get("tts_swahili_engine", "edge"),
                 gender_sw=doc.get("gender_sw"),

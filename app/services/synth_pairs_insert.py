@@ -29,6 +29,8 @@ async def insert_synth_pair(
     gender_sw: str | None,
     csv_row: int | None = None,
     language_pair_id: ObjectId | None = None,
+    tts_english_engine: str = "edge",
+    gender_en: str | None = None,
 ) -> str:
     from app.r2_storage import put_object_bytes, r2_enabled
     from app.services.language_pairs import get_pair_by_id, resolve_default_pair, synth_audio_keys
@@ -97,6 +99,8 @@ async def insert_synth_pair(
         "text_english": text_english.strip(),
         "text_swahili": text_swahili.strip(),
         "tts_english_voice": tts_english_voice,
+        "tts_english_engine": tts_english_engine,
+        "gender_en": gender_en,
         "tts_swahili_voice": tts_swahili_voice,
         "tts_swahili_engine": tts_swahili_engine,
         "gender_sw": gender_sw,

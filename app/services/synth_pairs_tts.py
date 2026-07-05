@@ -1,51 +1,93 @@
-"""TTS for parallel_synth_pairs: English (reuse stack) + Swahili (Edge multi-voice)."""
+"""TTS for parallel_synth_pairs: pair-aware source/target synthesis."""
+from __future__ import annotations
+
 import random
-from typing import Final
 
 from app.config import settings
-from app.services.tts_english import EDGE_VOICE, generate_wav_edge_tts, generate_wav_from_text
+from app.services.pair_tts_config import (
+    ENGLISH_VOICES,
+    SWAHILI_VOICES,
+    TtsSideConfig,
+    resolve_pair_tts,
+)
+from app.services.tts_english import EDGE_VOICE, generate_wav_edge_tts
+from app.services.tts_mms import MmsTtsNotInstalledError, generate_wav_mms
 
-# (voice_short_name, gender label) — Phase A: Edge only
-SWAHILI_VOICES: Final[list[tuple[str, str]]] = [
-    ("sw-KE-RafikiNeural", "male"),
-    ("sw-KE-ZuriNeural", "female"),
-    ("sw-TZ-DaudiNeural", "male"),
-    ("sw-TZ-RehemaNeural", "female"),
-]
 
-
-def pick_swahili_voice() -> tuple[str, str]:
-    """Return (edge_voice_short_name, gender_sw)."""
-    voice, gender = random.choice(SWAHILI_VOICES)
-    return voice, gender
+def pick_edge_voice(voices: tuple[tuple[str, str], ...]) -> tuple[str, str]:
+    """Return (edge_voice_short_name, gender)."""
+    if not voices:
+        raise ValueError("No Edge voices configured for this side")
+    return random.choice(voices)
 
 
 def maybe_augment_wav(wav: bytes) -> bytes:
-    """Placeholder when synth_augment_enabled; torchaudio pipeline not shipped (plan optional)."""
+    """Placeholder when synth_augment_enabled; torchaudio pipeline not shipped."""
     if settings.synth_augment_enabled:
-        # Reserved: optional torchaudio transforms — off by default
         pass
     return wav
 
 
-def generate_english_wav_for_synth(text: str) -> tuple[bytes, str]:
-    """English WAV bytes and persisted voice label."""
-    wav = generate_wav_from_text(text)
-    wav = maybe_augment_wav(wav)
-    return wav, EDGE_VOICE
-
-
-def generate_swahili_wav_for_synth(text: str) -> tuple[bytes, str, str, str]:
-    """Swahili WAV, voice short name, engine label, gender_sw."""
-    engine = (settings.synth_sw_engine or "edge").strip().lower()
-    if engine != "edge":
-        raise ValueError(
-            f'Swahili TTS engine "{engine}" is not implemented; use synth_sw_engine=edge.',
-        )
+def _synthesize_side(text: str, side: TtsSideConfig, side_label: str) -> tuple[bytes, str, str, str | None]:
     text = (text or "").strip()
     if not text:
-        raise ValueError("Swahili text is required for synthesis")
-    voice, gender_sw = pick_swahili_voice()
-    wav = generate_wav_edge_tts(text, voice)
-    wav = maybe_augment_wav(wav)
-    return wav, voice, "edge", gender_sw
+        raise ValueError(f"{side_label} text is required for synthesis")
+
+    engine = side.engine
+    if engine == "edge":
+        voice, gender = pick_edge_voice(side.edge_voices)
+        wav = generate_wav_edge_tts(text, voice)
+        wav = maybe_augment_wav(wav)
+        return wav, voice, "edge", gender
+
+    if engine == "mms":
+        model_id = side.mms_model or ""
+        try:
+            wav = generate_wav_mms(text, model_id)
+        except MmsTtsNotInstalledError:
+            raise
+        wav = maybe_augment_wav(wav)
+        return wav, model_id, "mms", None
+
+    raise ValueError(f'{side_label} TTS engine "{engine}" is not supported.')
+
+
+def generate_source_wav_for_synth(text: str, pair: dict) -> tuple[bytes, str, str, str | None]:
+    """Source-side WAV, voice label, engine, optional gender."""
+    cfg = resolve_pair_tts(pair)
+    return _synthesize_side(text, cfg.source, "Source")
+
+
+def generate_target_wav_for_synth(text: str, pair: dict) -> tuple[bytes, str, str, str | None]:
+    """Target-side WAV, voice label, engine, optional gender."""
+    cfg = resolve_pair_tts(pair)
+    return _synthesize_side(text, cfg.target, "Target")
+
+
+def generate_english_wav_for_synth(text: str, pair: dict | None = None) -> tuple[bytes, str, str, str | None]:
+    """Backward-compatible English/source synthesis with default English pair shape."""
+    if pair is None:
+        pair = {"audio_folder_source": "english", "audio_folder_target": "swahili"}
+    return generate_source_wav_for_synth(text, pair)
+
+
+def generate_swahili_wav_for_synth(text: str, pair: dict | None = None) -> tuple[bytes, str, str, str | None]:
+    """Backward-compatible target synthesis; uses pair target config or Swahili defaults."""
+    if pair is None:
+        pair = {"audio_folder_source": "english", "audio_folder_target": "swahili"}
+    return generate_target_wav_for_synth(text, pair)
+
+
+# Re-export for callers that imported voice lists
+__all__ = [
+    "ENGLISH_VOICES",
+    "SWAHILI_VOICES",
+    "EDGE_VOICE",
+    "generate_english_wav_for_synth",
+    "generate_swahili_wav_for_synth",
+    "generate_source_wav_for_synth",
+    "generate_target_wav_for_synth",
+    "maybe_augment_wav",
+    "pick_edge_voice",
+    "resolve_pair_tts",
+]
