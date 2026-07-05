@@ -192,10 +192,27 @@ def main() -> int:
             return 1
         data = r.json()
         created = len(data.get("created_ids", []))
-        errs = len(data.get("errors", []))
+        error_items = data.get("errors") or []
+        errs = len(error_items)
         total_ok += created
         total_err += errs
         print(f"  chunk {chunk_idx}: created={created} errors={errs}")
+        if error_items:
+            seen: set[str] = set()
+            shown = 0
+            for item in error_items:
+                detail = item.get("detail") if isinstance(item, dict) else str(item)
+                row = item.get("row") if isinstance(item, dict) else "?"
+                if not detail or detail in seen:
+                    continue
+                seen.add(detail)
+                print(f"    row {row}: {detail}")
+                shown += 1
+                if shown >= 5:
+                    remaining = len({e.get("detail") for e in error_items if isinstance(e, dict)}) - shown
+                    if remaining > 0:
+                        print(f"    … and {remaining} more unique error(s)")
+                    break
     print(f"Done: created_ids total={total_ok} error rows total={total_err}")
     return 0 if total_ok > 0 or total_err == 0 else 1
 
