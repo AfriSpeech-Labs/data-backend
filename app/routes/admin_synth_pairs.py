@@ -28,9 +28,10 @@ from app.services.synth_pairs_read import (
     stream_swahili,
 )
 from app.services.synth_pairs_tts import (
-    generate_english_wav_for_synth,
-    generate_swahili_wav_for_synth,
+    generate_source_wav_for_synth,
+    generate_target_wav_for_synth,
 )
+from app.services.tts_mms import MmsTtsNotInstalledError
 
 router = APIRouter(
     prefix="/api/admin/synth-pairs",
@@ -54,6 +55,19 @@ async def _pair_oid_optional(pair_id: str | None) -> ObjectId | None:
     if not pair:
         raise HTTPException(status_code=404, detail="Language pair not found")
     return oid
+
+
+async def _pair_oid_required(pair_id: str | None) -> tuple[ObjectId, dict]:
+    if not pair_id or not str(pair_id).strip():
+        raise HTTPException(status_code=400, detail="pair_id is required")
+    try:
+        oid = ObjectId(pair_id.strip())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid pair_id") from None
+    pair = await get_pair_by_id(oid)
+    if not pair:
+        raise HTTPException(status_code=404, detail="Language pair not found")
+    return oid, pair
 
 
 def _coll():
@@ -104,11 +118,18 @@ async def synth_pairs_stats(
 async def synth_bulk_csv(
     file: UploadFile = File(...),
     max_rows: int = Query(SYNTH_CSV_DEFAULT_MAX, ge=1, le=SYNTH_CSV_HARD_CAP),
-    english_column: str = Query("english"),
-    swahili_column: str = Query("swahili"),
-    pair_id: str | None = Query(None, description="Tag imported rows with this language pair"),
+    pair_id: str = Query(..., description="Language pair that drives TTS engines and voices"),
+    source_column: str | None = Query(None, description="CSV source column; default from pair"),
+    target_column: str | None = Query(None, description="CSV target column; default from pair"),
+    english_column: str | None = Query(None, description="Alias for source_column (legacy)"),
+    swahili_column: str | None = Query(None, description="Alias for target_column (legacy)"),
 ):
-    """Import parallel EN/SW text; TTS both languages per row; max 200 non-empty rows per request."""
+    """Import parallel source/target text; TTS both sides per row using pair TTS config."""
+    pair_oid, pair_doc = await _pair_oid_required(pair_id)
+
+    src_col = (source_column or english_column or pair_doc.get("audio_folder_source") or "english").strip()
+    tgt_col = (target_column or swahili_column or pair_doc.get("audio_folder_target") or "swahili").strip()
+
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only .csv files allowed")
     raw = await file.read()
@@ -122,27 +143,27 @@ async def synth_bulk_csv(
     if reader.fieldnames is None:
         raise HTTPException(status_code=400, detail="CSV has no header row")
     headers_lower = {h.strip().lower(): h for h in reader.fieldnames if h}
-    en_key = english_column.strip().lower()
-    sw_key = swahili_column.strip().lower()
-    if en_key not in headers_lower:
+    src_key = src_col.lower()
+    tgt_key = tgt_col.lower()
+    if src_key not in headers_lower:
         raise HTTPException(
             status_code=400,
-            detail=f"Missing column '{english_column}'. Found: {list(reader.fieldnames)}",
+            detail=f"Missing source column '{src_col}'. Found: {list(reader.fieldnames)}",
         )
-    if sw_key not in headers_lower:
+    if tgt_key not in headers_lower:
         raise HTTPException(
             status_code=400,
-            detail=f"Missing column '{swahili_column}'. Found: {list(reader.fieldnames)}",
+            detail=f"Missing target column '{tgt_col}'. Found: {list(reader.fieldnames)}",
         )
-    col_en = headers_lower[en_key]
-    col_sw = headers_lower[sw_key]
+    col_src = headers_lower[src_key]
+    col_tgt = headers_lower[tgt_key]
     rows: list[tuple[int, str, str]] = []
     for i, row in enumerate(reader, start=1):
-        en = (row.get(col_en) or "").strip()
-        sw = (row.get(col_sw) or "").strip()
-        if not en and not sw:
+        src = (row.get(col_src) or "").strip()
+        tgt = (row.get(col_tgt) or "").strip()
+        if not src and not tgt:
             continue
-        rows.append((i, en, sw))
+        rows.append((i, src, tgt))
     if len(rows) > max_rows:
         raise HTTPException(
             status_code=400,
@@ -154,53 +175,59 @@ async def synth_bulk_csv(
 
     created_ids: list[str] = []
     errors: list[BulkCsvErrorItem] = []
-    pair_oid = await _pair_oid_optional(pair_id)
 
-    for row_index, en, sw in rows:
-        if not en:
-            errors.append(BulkCsvErrorItem(row=row_index, detail="Empty English text"))
+    for row_index, src_text, tgt_text in rows:
+        if not src_text:
+            errors.append(BulkCsvErrorItem(row=row_index, detail="Empty source text"))
             continue
-        if not sw:
+        if not tgt_text:
             errors.append(
                 BulkCsvErrorItem(
                     row=row_index,
-                    detail="Empty Swahili text (required for bidirectional TTS)",
+                    detail="Empty target text (required for bidirectional TTS)",
                 )
             )
             continue
         try:
-            wav_en, voice_en = await asyncio.to_thread(generate_english_wav_for_synth, en)
+            wav_src, voice_src, engine_src, gender_src = await asyncio.to_thread(
+                generate_source_wav_for_synth, src_text, pair_doc
+            )
         except ValueError as e:
             errors.append(BulkCsvErrorItem(row=row_index, detail=str(e)))
             continue
         except Exception as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=f"English TTS: {e!s}"))
+            errors.append(BulkCsvErrorItem(row=row_index, detail=f"Source TTS: {e!s}"))
             continue
         try:
-            wav_sw, voice_sw, engine_sw, gender_sw = await asyncio.to_thread(
-                generate_swahili_wav_for_synth, sw
+            wav_tgt, voice_tgt, engine_tgt, gender_tgt = await asyncio.to_thread(
+                generate_target_wav_for_synth, tgt_text, pair_doc
             )
+        except MmsTtsNotInstalledError as e:
+            raise HTTPException(status_code=501, detail=str(e)) from e
         except ValueError as e:
             msg = str(e)
-            if "not implemented" in msg.lower():
-                raise HTTPException(status_code=501, detail=msg) from e
-            errors.append(BulkCsvErrorItem(row=row_index, detail=msg))
+            if "not supported" in msg.lower() or "not configured" in msg.lower():
+                errors.append(BulkCsvErrorItem(row=row_index, detail=msg))
+            else:
+                errors.append(BulkCsvErrorItem(row=row_index, detail=msg))
             continue
         except Exception as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=f"Swahili TTS: {e!s}"))
+            errors.append(BulkCsvErrorItem(row=row_index, detail=f"Target TTS: {e!s}"))
             continue
         try:
             new_id = await insert_synth_pair(
-                wav_en,
-                wav_sw,
-                en,
-                sw,
-                voice_en,
-                voice_sw,
-                engine_sw,
-                gender_sw,
+                wav_src,
+                wav_tgt,
+                src_text,
+                tgt_text,
+                voice_src,
+                voice_tgt,
+                engine_tgt,
+                gender_tgt,
                 csv_row=row_index,
                 language_pair_id=pair_oid,
+                tts_english_engine=engine_src,
+                gender_en=gender_src,
             )
             created_ids.append(new_id)
         except Exception as e:
@@ -253,7 +280,10 @@ async def synth_detail(id: str):
         "length_swahili": doc.get("length_swahili"),
         "validation_status": doc.get("validation_status", "pending"),
         "tts_english_voice": doc.get("tts_english_voice"),
+        "tts_english_engine": doc.get("tts_english_engine", "edge"),
+        "gender_en": doc.get("gender_en"),
         "tts_swahili_voice": doc.get("tts_swahili_voice"),
+        "tts_swahili_engine": doc.get("tts_swahili_engine", "edge"),
         "gender_sw": doc.get("gender_sw"),
         "validated_by": doc.get("validated_by"),
         "validation_note": doc.get("validation_note"),

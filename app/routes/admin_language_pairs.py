@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from typing import Literal
+
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -31,6 +33,12 @@ class PairCreate(BaseModel):
     file_suffix_source: str = Field(..., min_length=1, max_length=16)
     file_suffix_target: str = Field(..., min_length=1, max_length=16)
     active: bool = True
+    tts_source_engine: Literal["edge", "mms"] | None = None
+    tts_source_voices: list[str] | None = None
+    tts_source_mms_model: str | None = None
+    tts_target_engine: Literal["edge", "mms"] | None = None
+    tts_target_voices: list[str] | None = None
+    tts_target_mms_model: str | None = None
 
 
 class PairOut(BaseModel):
@@ -42,6 +50,12 @@ class PairOut(BaseModel):
     file_suffix_source: str
     file_suffix_target: str
     active: bool
+    tts_source_engine: str | None = None
+    tts_source_voices: list[str] | None = None
+    tts_source_mms_model: str | None = None
+    tts_target_engine: str | None = None
+    tts_target_voices: list[str] | None = None
+    tts_target_mms_model: str | None = None
 
 
 class PairSummaryOut(PairOut):
@@ -50,7 +64,26 @@ class PairSummaryOut(PairOut):
     pending_items: int = 0
 
 
+def _tts_fields_from_body(body: PairCreate) -> dict:
+    out: dict = {}
+    if body.tts_source_engine is not None:
+        out["tts_source_engine"] = body.tts_source_engine
+    if body.tts_source_voices is not None:
+        out["tts_source_voices"] = [v.strip() for v in body.tts_source_voices if v.strip()]
+    if body.tts_source_mms_model is not None:
+        out["tts_source_mms_model"] = body.tts_source_mms_model.strip() or None
+    if body.tts_target_engine is not None:
+        out["tts_target_engine"] = body.tts_target_engine
+    if body.tts_target_voices is not None:
+        out["tts_target_voices"] = [v.strip() for v in body.tts_target_voices if v.strip()]
+    if body.tts_target_mms_model is not None:
+        out["tts_target_mms_model"] = body.tts_target_mms_model.strip() or None
+    return out
+
+
 def _out(doc: dict) -> PairOut:
+    voices_src = doc.get("tts_source_voices")
+    voices_tgt = doc.get("tts_target_voices")
     return PairOut(
         id=str(doc["_id"]),
         slug=doc["slug"],
@@ -60,6 +93,12 @@ def _out(doc: dict) -> PairOut:
         file_suffix_source=doc.get("file_suffix_source", ""),
         file_suffix_target=doc.get("file_suffix_target", ""),
         active=bool(doc.get("active", True)),
+        tts_source_engine=doc.get("tts_source_engine"),
+        tts_source_voices=list(voices_src) if isinstance(voices_src, list) else None,
+        tts_source_mms_model=doc.get("tts_source_mms_model"),
+        tts_target_engine=doc.get("tts_target_engine"),
+        tts_target_voices=list(voices_tgt) if isinstance(voices_tgt, list) else None,
+        tts_target_mms_model=doc.get("tts_target_mms_model"),
     )
 
 
@@ -133,6 +172,7 @@ async def create_pair(body: PairCreate, _: AdminIdentity = Depends(require_admin
         "file_suffix_target": body.file_suffix_target.strip(),
         "active": body.active,
         "created_at": datetime.now(timezone.utc),
+        **_tts_fields_from_body(body),
     }
     res = await db[COLLECTION].insert_one(doc)
     doc["_id"] = res.inserted_id
@@ -168,6 +208,7 @@ async def update_pair(
                 "file_suffix_source": body.file_suffix_source.strip(),
                 "file_suffix_target": body.file_suffix_target.strip(),
                 "active": body.active,
+                **_tts_fields_from_body(body),
             }
         },
     )
