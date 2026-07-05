@@ -97,6 +97,10 @@ async def connect_db():
             {"pair_id": {"$exists": False}},
             {"$set": {"pair_id": pid}},
         )
+        await db[coll].update_many(
+            {"language_pair_id": {"$exists": False}},
+            {"$set": {"language_pair_id": pid}},
+        )
     except Exception:
         pass
 

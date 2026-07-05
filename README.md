@@ -214,15 +214,46 @@ Full dataset downloads (uncapped; can be large/memory-heavy):
 - `GET /api/admin/datasets/parallel/download?status=all|pending|submitted`
 - `GET /api/admin/datasets/synthetic/download?status=all|pending|approved|rejected`
 
-Synthetic TTS pairs (QA + export):
+Synthetic TTS pairs (QA + export; **pair-aware multi-language TTS**):
 
-- `GET /api/admin/synth-pairs` (list)
+- `GET /api/admin/synth-pairs` (list; optional `pair_id`)
 - `GET /api/admin/synth-pairs/stats`
-- `POST /api/admin/synth-pairs/bulk-csv` (bidirectional TTS per row; `max_rows` cap)
+- `POST /api/admin/synth-pairs/bulk-csv` — **`pair_id` required**; TTS both sides per row using pair config (`max_rows` default 50, max 200)
 - `PATCH /api/admin/synth-pairs/{id}/validation`
 - `GET /api/admin/synth-pairs/{id}/detail`
-- `GET /api/admin/synth-pairs/{id}/english|swahili` (stream)
+- `GET /api/admin/synth-pairs/{id}/english|swahili` (stream source/target audio)
 - `GET /api/admin/synth-pairs/export` (ZIP export; capped)
+
+**TTS engines (per language pair):**
+
+- **English source** (`audio_folder_source: english`): always **Edge TTS** with random **male/female** voices (8-voice default pool; override via `tts_source_voices` on the pair).
+- **Target**: **Edge** when Azure has voices (e.g. Swahili), or **MMS** (HuggingFace `tts_target_mms_model`) for low-resource languages (Twi, Hausa, Ga, …). Folder-name presets apply when TTS fields are omitted (`swahili` → Edge; `twi`, `ga`, `ewe`, … → MMS defaults).
+- Configure via `POST/PATCH /api/admin/language-pairs` optional fields: `tts_target_engine`, `tts_target_voices`, `tts_target_mms_model`, …
+
+**Bulk CSV query params:** `pair_id`, `source_column`, `target_column` (legacy aliases: `english_column`, `swahili_column`). Column defaults come from the pair’s folder names.
+
+**Chunked CLI (full script upload):**
+
+```bash
+# Dry-run: count rows/chunks only
+python scripts/import_synth_pairs_csv.py --dry-run ^
+  --pair-id YOUR_LANGUAGE_PAIR_OBJECT_ID ^
+  --file path/to/full_script.csv ^
+  --source-column english ^
+  --target-column twi
+
+# Upload entire file (50 rows per request; increase --timeout for MMS)
+python scripts/import_synth_pairs_csv.py --url https://your-api.example.com ^
+  --pair-id YOUR_LANGUAGE_PAIR_OBJECT_ID ^
+  --file path/to/full_script.csv ^
+  --source-column english ^
+  --target-column twi ^
+  --chunk-rows 50
+```
+
+Admin UI (pair workspace → Synth): use **Upload full file** for CSV or Excel — same chunked flow in the browser.
+
+**MMS optional deps** (install on servers that import non-Edge targets): `torch`, `transformers`, `scipy` (see `requirements.txt`). Expect ~1–2 GB RAM when a model is loaded.
 
 Parallel text corpus (text-only; admin):
 

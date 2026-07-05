@@ -85,6 +85,8 @@ class SynthPairItemResponse(BaseModel):
     text_swahili: Optional[str] = None
     validation_status: str  # pending | approved | rejected
     tts_english_voice: Optional[str] = None
+    tts_english_engine: str = "edge"
+    gender_en: Optional[str] = None
     tts_swahili_voice: Optional[str] = None
     tts_swahili_engine: str = "edge"
     gender_sw: Optional[str] = None

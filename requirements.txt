@@ -11,3 +11,7 @@ PyJWT>=2.8.0
 bcrypt>=4.1.0
 httpx>=0.27.0
 aioboto3>=13.0.0
+# Optional: MMS TTS for synth pairs (non-Edge languages). Install on servers that run MMS import.
+torch>=2.0
+transformers>=4.33
+scipy>=1.11
