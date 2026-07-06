@@ -1,4 +1,4 @@
-"""Contributor leaderboard for a language pair (multi-contributor pairs only)."""
+"""Contributor leaderboard for a language pair."""
 from __future__ import annotations
 
 import re
@@ -9,7 +9,6 @@ from bson import ObjectId
 from app.config import settings
 from app.db import get_database
 from app.services.language_pairs import get_pair_by_id
-from app.services.pair_delete import count_contributors_for_pair
 
 TaskKind = Literal["text", "audio"]
 CONTRIBUTOR_COLLECTION = "contributor_users"
@@ -20,6 +19,15 @@ def _mask_phone(phone: str) -> str:
     if len(digits) >= 4:
         return f"···{digits[-4:]}"
     return "Contributor"
+
+
+def _contributor_pair_filter(pair_oid: ObjectId) -> dict:
+    return {
+        "$or": [
+            {"language_pair_id": pair_oid},
+            {"language_pair_id": str(pair_oid)},
+        ]
+    }
 
 
 async def _submission_counts_by_user(
@@ -69,15 +77,16 @@ async def fetch_contributor_leaderboard(
         else "Language pair"
     )
 
-    contributor_count = await count_contributors_for_pair(pair_oid)
-    if contributor_count < 2:
+    db = get_database()
+    pair_filter = _contributor_pair_filter(pair_oid)
+    contributor_count = await db[CONTRIBUTOR_COLLECTION].count_documents(pair_filter)
+    if contributor_count < 1:
         return {"enabled": False, "language_pair_label": label, "entries": []}
 
-    db = get_database()
     submission_counts = await _submission_counts_by_user(pair_oid, task)
 
     contributors: list[dict] = []
-    async for doc in db[CONTRIBUTOR_COLLECTION].find({"language_pair_id": pair_oid}):
+    async for doc in db[CONTRIBUTOR_COLLECTION].find(pair_filter):
         uid = str(doc["_id"])
         phone = str(doc.get("phone_e164", ""))
         contributors.append(
