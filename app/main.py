@@ -42,6 +42,7 @@ from app.routes.admin_text_corpus import router as admin_text_corpus_router
 from app.routes.audio import router as audio_router
 from app.routes.batches import router as batches_router
 from app.routes.contributor_auth import router as contributor_auth_router
+from app.routes.contributor_leaderboard import router as contributor_leaderboard_router
 from app.routes.text_batches import router as text_batches_router
 from app.routes.text_corpus import router as text_corpus_router
 
@@ -64,6 +65,7 @@ app.include_router(batches_router)
 app.include_router(text_batches_router)
 app.include_router(text_corpus_router)
 app.include_router(contributor_auth_router)
+app.include_router(contributor_leaderboard_router)
 app.include_router(admin_auth_router)
 app.include_router(admin_language_pairs_router)
 app.include_router(admin_contributors_router)

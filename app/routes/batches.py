@@ -15,6 +15,11 @@ from app.models import (
     MyCurrentBatchResponse,
     SpeechItemResponse,
 )
+from app.services.batch_claims import (
+    BATCH_SIZE,
+    batch_total_for_index,
+    is_batch_complete,
+)
 from app.services.language_pairs import resolve_pair_id
 
 router = APIRouter(prefix="/api/batches", tags=["batches"])
@@ -22,7 +27,6 @@ COLLECTION = "speech_parallel"
 CLAIMS_COLLECTION = "batch_claims"
 COMPLETIONS_COLLECTION = "batch_completions"
 LEGACY_COMPLETIONS = "session_batch_completions"
-BATCH_SIZE = 25
 UNCLAIMED_RANDOM_PREVIEW = 3
 _UNCLAIMED_PREVIEW_CHUNK = 15
 
@@ -193,7 +197,8 @@ async def list_batches(
         for k, sub in zip(chunk, subs, strict=True):
             if len(picked) >= UNCLAIMED_RANDOM_PREVIEW:
                 break
-            if sub < BATCH_SIZE:
+            batch_tot = batch_total_for_index(total, k)
+            if batch_tot > 0 and sub < batch_tot:
                 picked.append((k, sub))
         if len(picked) >= UNCLAIMED_RANDOM_PREVIEW:
             break
@@ -206,7 +211,7 @@ async def list_batches(
             "batch_index": k,
             "status": "pending",
             "submitted_count": submitted,
-            "total": BATCH_SIZE,
+            "total": batch_total_for_index(total, k),
             "claimed_by_you": False,
         })
     return {"batches": batches, "total_items": total}
@@ -228,12 +233,19 @@ async def get_current_batch(
     if not claim:
         raise HTTPException(status_code=404, detail="No batch claimed")
     batch_index = int(claim["batch_index"])
+    pair_total = await _count_pair(pair_oid)
     submitted = await _submitted_count_for_batch(pair_oid, batch_index)
-    status = "completed" if submitted >= BATCH_SIZE else "submission_ongoing"
-    if submitted >= BATCH_SIZE:
+    batch_tot = batch_total_for_index(pair_total, batch_index)
+    status = "completed" if is_batch_complete(submitted, pair_total, batch_index) else "submission_ongoing"
+    if status == "completed":
         await _ensure_completion_logged(
             pair_oid,
             batch_index,
+            None if contrib else x_session_id,
+            contrib.sub if contrib else None,
+        )
+        await _release_actor_claims(
+            pair_oid,
             None if contrib else x_session_id,
             contrib.sub if contrib else None,
         )
@@ -241,7 +253,7 @@ async def get_current_batch(
         "batch_index": batch_index,
         "status": status,
         "submitted_count": submitted,
-        "total": BATCH_SIZE,
+        "total": batch_tot,
     }
 
 
@@ -267,17 +279,20 @@ async def my_batches_overview(
     current: MyCurrentBatchResponse | None = None
     if claim:
         batch_index = int(claim["batch_index"])
+        pair_total = await _count_pair(pair_oid)
         submitted = await _submitted_count_for_batch(pair_oid, batch_index)
-        if submitted >= BATCH_SIZE:
+        batch_tot = batch_total_for_index(pair_total, batch_index)
+        if is_batch_complete(submitted, pair_total, batch_index):
             await _ensure_completion_logged(
                 pair_oid, batch_index, session_for_legacy, uid
             )
+            await _release_actor_claims(pair_oid, session_for_legacy, uid)
         else:
             current = MyCurrentBatchResponse(
                 batch_index=batch_index,
                 status="submission_ongoing",
                 submitted_count=submitted,
-                total=BATCH_SIZE,
+                total=batch_tot,
             )
 
     completed: list[CompletedBatchInfo] = []
@@ -343,13 +358,15 @@ async def claim_batch(
     if existing:
         other_index = int(existing["batch_index"])
         if other_index != batch_index:
+            pair_total = await _count_pair(pair_oid)
             other_submitted = await _submitted_count_for_batch(pair_oid, other_index)
-            if other_submitted < BATCH_SIZE:
+            if not is_batch_complete(other_submitted, pair_total, other_index):
                 raise HTTPException(
                     status_code=400,
                     detail="Finish your current batch before selecting another.",
                 )
             await _ensure_completion_logged(pair_oid, other_index, sid, uid)
+            await _release_actor_claims(pair_oid, sid, uid)
 
     claimed_by_session = await _claimant_session_for_batch(pair_oid, batch_index)
     claimed_by_user = await _claimant_user_for_batch(pair_oid, batch_index)
@@ -377,12 +394,43 @@ async def claim_batch(
     await db[CLAIMS_COLLECTION].insert_one(doc_claim)
 
     submitted = await _submitted_count_for_batch(pair_oid, batch_index)
+    pair_total = await _count_pair(pair_oid)
+    batch_tot = batch_total_for_index(pair_total, batch_index)
     return {
         "batch_index": batch_index,
-        "status": "completed" if submitted >= BATCH_SIZE else "submission_ongoing",
+        "status": "completed" if is_batch_complete(submitted, pair_total, batch_index) else "submission_ongoing",
         "submitted_count": submitted,
-        "total": BATCH_SIZE,
+        "total": batch_tot,
     }
+
+
+@router.post("/current/release")
+async def release_current_batch(
+    pair_id: str | None = Query(None),
+    x_session_id: str | None = Header(None, alias="X-Session-ID"),
+    contrib: ContributorIdentity | None = Depends(optional_contributor),
+):
+    """Release an incomplete claimed batch so the contributor can select another."""
+    pair_oid, _ = await _pair_scope(pair_id, contrib)
+    if contrib:
+        sid = None
+        uid = contrib.sub
+        claim = await _user_claim_doc(pair_oid, uid)
+    else:
+        if not x_session_id:
+            raise HTTPException(status_code=400, detail="X-Session-ID header required")
+        sid = x_session_id
+        uid = None
+        claim = await _session_claim_doc(pair_oid, sid)
+    if not claim:
+        raise HTTPException(status_code=404, detail="No batch claimed")
+    batch_index = int(claim["batch_index"])
+    pair_total = await _count_pair(pair_oid)
+    submitted = await _submitted_count_for_batch(pair_oid, batch_index)
+    if is_batch_complete(submitted, pair_total, batch_index):
+        raise HTTPException(status_code=400, detail="Batch already completed")
+    await _release_actor_claims(pair_oid, sid, uid)
+    return {"ok": True}
 
 
 @router.get("/{batch_index}/items", response_model=list[SpeechItemResponse])

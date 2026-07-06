@@ -172,6 +172,19 @@ class TextTranslationSubmitBody(BaseModel):
     text_source: str = Field(min_length=1)
 
 
+class LeaderboardEntry(BaseModel):
+    rank: int
+    display_name: str
+    submitted_count: int
+    is_current_user: bool = False
+
+
+class LeaderboardResponse(BaseModel):
+    enabled: bool
+    language_pair_label: str = ""
+    entries: list[LeaderboardEntry] = Field(default_factory=list)
+
+
 class AdminBatchClaimItem(BaseModel):
     workflow: Literal["audio", "text"]
     pair_id: str
