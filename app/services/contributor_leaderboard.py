@@ -22,19 +22,10 @@ def _mask_phone(phone: str) -> str:
     return "Contributor"
 
 
-async def fetch_contributor_leaderboard(
-    *,
+async def _submission_counts_by_user(
     pair_oid: ObjectId,
     task: TaskKind,
-    current_user_id: str | None,
-) -> dict:
-    pair_doc = await get_pair_by_id(pair_oid)
-    label = str(pair_doc.get("display_name") or pair_doc.get("slug") or "Language pair") if pair_doc else "Language pair"
-
-    contributor_count = await count_contributors_for_pair(pair_oid)
-    if contributor_count < 2:
-        return {"enabled": False, "language_pair_label": label, "entries": []}
-
+) -> dict[str, int]:
     db = get_database()
     if task == "text":
         coll = db[settings.parallel_text_corpus_collection]
@@ -56,32 +47,56 @@ async def fetch_contributor_leaderboard(
     pipeline = [
         {"$match": match},
         {"$group": {"_id": "$submitted_by_user_id", "submitted_count": {"$sum": 1}}},
-        {"$sort": {"submitted_count": -1}},
-        {"$limit": 10},
     ]
     async for row in coll.aggregate(pipeline):
         uid = row.get("_id")
         if uid is None:
             continue
         counts[str(uid)] = int(row.get("submitted_count") or 0)
+    return counts
 
-    if not counts:
+
+async def fetch_contributor_leaderboard(
+    *,
+    pair_oid: ObjectId,
+    task: TaskKind,
+    current_user_id: str | None,
+) -> dict:
+    pair_doc = await get_pair_by_id(pair_oid)
+    label = (
+        str(pair_doc.get("display_name") or pair_doc.get("slug") or "Language pair")
+        if pair_doc
+        else "Language pair"
+    )
+
+    contributor_count = await count_contributors_for_pair(pair_oid)
+    if contributor_count < 2:
         return {"enabled": False, "language_pair_label": label, "entries": []}
 
-    user_ids = [ObjectId(uid) for uid in counts]
-    phones: dict[str, str] = {}
-    async for doc in db[CONTRIBUTOR_COLLECTION].find({"_id": {"$in": user_ids}}):
-        phones[str(doc["_id"])] = str(doc.get("phone_e164", ""))
+    db = get_database()
+    submission_counts = await _submission_counts_by_user(pair_oid, task)
 
-    sorted_users = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    contributors: list[dict] = []
+    async for doc in db[CONTRIBUTOR_COLLECTION].find({"language_pair_id": pair_oid}):
+        uid = str(doc["_id"])
+        phone = str(doc.get("phone_e164", ""))
+        contributors.append(
+            {
+                "user_id": uid,
+                "phone": phone,
+                "submitted_count": submission_counts.get(uid, 0),
+            }
+        )
+
+    contributors.sort(key=lambda c: c["submitted_count"], reverse=True)
     entries = []
-    for rank, (uid, submitted_count) in enumerate(sorted_users, start=1):
-        is_you = current_user_id is not None and uid == current_user_id
+    for rank, c in enumerate(contributors, start=1):
+        is_you = current_user_id is not None and c["user_id"] == current_user_id
         entries.append(
             {
                 "rank": rank,
-                "display_name": "You" if is_you else _mask_phone(phones.get(uid, "")),
-                "submitted_count": submitted_count,
+                "display_name": "You" if is_you else _mask_phone(c["phone"]),
+                "submitted_count": c["submitted_count"],
                 "is_current_user": is_you,
             }
         )
