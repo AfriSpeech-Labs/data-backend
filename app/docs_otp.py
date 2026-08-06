@@ -1,4 +1,4 @@
-"""Protect /docs and /redoc with a 6-digit OTP. Code is logged at startup."""
+"""Protect /docs and /redoc with a 6-digit OTP. Code is logged at startup and on each gate visit."""
 import hashlib
 import hmac
 import logging
@@ -13,27 +13,34 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 DOCS_PATHS = {"/docs", "/redoc", "/openapi.json"}
+GATE_PATHS = {"/docs", "/redoc"}
 COOKIE_NAME = "docs_access"
 
 _current_otp: str = ""
 _otp_expires_at: float = 0.0
 
 
-def init_docs_otp() -> None:
-    """Generate 6-digit OTP and print it so it appears in deploy logs. Call at startup when docs_otp_enabled."""
+def issue_docs_otp() -> str:
+    """Generate a new 6-digit OTP, log it, and return it. Invalidates any previous code."""
     global _current_otp, _otp_expires_at
-    if not settings.docs_otp_enabled:
-        return
-    if not settings.docs_otp_secret:
-        print("Docs OTP: SKIPPED - set DOCS_OTP_SECRET in your environment to enable docs protection.")
-        logger.warning("Docs OTP enabled but DOCS_OTP_SECRET is not set; docs remain public.")
-        return
     ttl_sec = settings.docs_otp_ttl_minutes * 60
     _current_otp = "".join(secrets.choice("0123456789") for _ in range(6))
     _otp_expires_at = time.time() + ttl_sec
     msg = f"Docs OTP: {_current_otp} (valid for {settings.docs_otp_ttl_minutes} min)"
     print(msg)
     logger.info("%s", msg)
+    return _current_otp
+
+
+def init_docs_otp() -> None:
+    """Issue an initial OTP at startup when docs_otp_enabled. Call from app startup."""
+    if not settings.docs_otp_enabled:
+        return
+    if not settings.docs_otp_secret:
+        print("Docs OTP: SKIPPED - set DOCS_OTP_SECRET in your environment to enable docs protection.")
+        logger.warning("Docs OTP enabled but DOCS_OTP_SECRET is not set; docs remain public.")
+        return
+    issue_docs_otp()
 
 
 def _is_otp_valid(otp: str) -> bool:
@@ -86,7 +93,7 @@ GATE_HTML = """<!DOCTYPE html>
     <input type="hidden" name="next_url" value="/docs" />
     <button type="submit" style="padding:10px;">Submit</button>
   </form>
-  <p style="color:#666;font-size:14px;">Get the code from the server logs when the app starts.</p>
+  <p style="color:#666;font-size:14px;">Get the code from the latest server logs (a new code is issued each time this page is opened).</p>
 </body>
 </html>
 """
@@ -123,6 +130,10 @@ class DocsOTPMiddleware(BaseHTTPMiddleware):
 
         if path == "/openapi.json":
             return Response(status_code=403, content='{"detail":"OTP required"}', media_type="application/json")
+
+        # New OTP on each unauthenticated /docs or /redoc visit (including refresh).
+        if path in GATE_PATHS:
+            issue_docs_otp()
 
         html = GATE_HTML.replace('name="next_url" value="/docs"', f'name="next_url" value="{path}"')
         return HTMLResponse(html)

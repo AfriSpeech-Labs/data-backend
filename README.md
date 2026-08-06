@@ -90,7 +90,7 @@ Contributor login can set an httpOnly cookie (default `contributor_session`) and
 
 ### Docs OTP (optional)
 
-When enabled, `/docs`, `/redoc`, and `/openapi.json` require a short-lived OTP that is printed in server logs on startup.
+When enabled, `/docs`, `/redoc`, and `/openapi.json` require a short-lived OTP. A code is printed in server logs on startup, and a **new** code is issued (and logged) each time an unauthenticated user opens or refreshes `/docs` or `/redoc`. After you enter a valid OTP, a cookie keeps access for `DOCS_OTP_TTL_MINUTES` without re-prompting.
 
 - `DOCS_OTP_ENABLED` (default false)
 - `DOCS_OTP_SECRET` (required for gating to actually activate)
@@ -265,7 +265,19 @@ Parallel text corpus (text-only; admin):
 Admin management:
 
 - `GET/POST/PATCH /api/admin/language-pairs` (CRUD + `GET /summary`)
-- `GET/POST/PATCH /api/admin/contributors` (CRUD, reset PIN, enable/disable, KPI list)
+- `GET/POST/PATCH /api/admin/contributors` (CRUD, reset PIN, enable/disable, KPI list; `role`: `contributor` | `reviewer`)
+- Reviewer synth QA (phone+PIN accounts with `role=reviewer`):
+  - `GET/PATCH /api/reviewer/synth-pairs` (list/stats/validation; pair-scoped)
+  - `GET /api/reviewer/synth-pairs/{id}/english|swahili`
+
+### Reviewer login shows Home instead of Synth QA
+
+The contributor web app routes by `role` from login/`/me`. If you still see Home / Record / Translate:
+
+1. Admin → Contributors: Role column must be **`reviewer`** (edit + Save if needed).
+2. Contributor app gear → **Server URL** must point at a backend that includes reviewer auth (local `http://127.0.0.1:8000` or redeployed Railway). Default production host without the new code omits `role` → SPA treats you as contributor.
+3. **Sign out**, then sign in again.
+4. DevTools → Network → `login` response must include `"role":"reviewer"`.
 
 ## Docker (API + MongoDB)
 
