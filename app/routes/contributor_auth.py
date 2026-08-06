@@ -1,4 +1,4 @@
-"""Contributor login (phone + PIN), cookie session."""
+"""Contributor/reviewer login (phone + PIN), cookie session."""
 from __future__ import annotations
 
 import re
@@ -11,9 +11,11 @@ from pydantic import BaseModel, Field
 from bson import ObjectId
 
 from app.auth_contributor import (
+    AccountRole,
     ContributorIdentity,
     create_contributor_token,
-    require_contributor,
+    normalize_account_role,
+    require_account,
     require_contributor_secret,
 )
 from app.config import settings
@@ -34,6 +36,7 @@ class MeResponse(BaseModel):
     user_id: str
     pair_id: str
     phone_e164: str
+    role: AccountRole = "contributor"
 
 
 def _validate_pin_format(pin: str) -> bool:
@@ -77,10 +80,16 @@ async def contributor_login(body: LoginBody):
     pair_id = str(doc.get("language_pair_id") or "")
     if not pair_id or not re.match(r"^[a-f\d]{24}$", pair_id, re.I):
         raise HTTPException(status_code=503, detail="Contributor has no language pair assigned")
-    token = create_contributor_token(uid, pair_id)
+    role = normalize_account_role(doc.get("role"))
+    token = create_contributor_token(uid, pair_id, role=role)
     max_age = max(60, int(settings.contributor_token_expire_hours * 3600))
     resp = JSONResponse(
-        content={"user_id": uid, "pair_id": pair_id, "phone_e164": phone}
+        content={
+            "user_id": uid,
+            "pair_id": pair_id,
+            "phone_e164": phone,
+            "role": role,
+        }
     )
     resp.set_cookie(
         key=settings.contributor_cookie_name,
@@ -107,7 +116,7 @@ async def contributor_logout():
 
 
 @router.get("/me", response_model=MeResponse)
-async def contributor_me(identity: ContributorIdentity = Depends(require_contributor)):
+async def contributor_me(identity: ContributorIdentity = Depends(require_account)):
     db = get_database()
     doc = await db[COLLECTION].find_one({"_id": ObjectId(identity.sub)})
     if not doc:
@@ -116,4 +125,5 @@ async def contributor_me(identity: ContributorIdentity = Depends(require_contrib
         user_id=str(doc["_id"]),
         pair_id=str(doc.get("language_pair_id")),
         phone_e164=str(doc.get("phone_e164", "")),
+        role=normalize_account_role(doc.get("role")),
     )

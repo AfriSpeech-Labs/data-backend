@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 import bcrypt
 from bson import ObjectId
@@ -9,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.auth_admin import AdminIdentity, require_admin
+from app.auth_contributor import normalize_account_role
 from app.config import settings
 from app.db import get_database
 from app.phone_norm import normalize_phone_e164
@@ -17,11 +19,14 @@ from app.services.language_pairs import get_pair_by_id
 router = APIRouter(prefix="/api/admin/contributors", tags=["admin-contributors"])
 COLLECTION = "contributor_users"
 
+AccountRoleLiteral = Literal["contributor", "reviewer"]
+
 
 class ContributorCreate(BaseModel):
     phone: str = Field(..., min_length=5)
     pin: str = Field(..., min_length=4)
     language_pair_id: str = Field(..., min_length=24, max_length=24)
+    role: AccountRoleLiteral = "contributor"
 
 
 class ContributorOut(BaseModel):
@@ -29,6 +34,7 @@ class ContributorOut(BaseModel):
     phone_e164: str
     language_pair_id: str
     disabled: bool
+    role: AccountRoleLiteral = "contributor"
 
 
 class PinResetBody(BaseModel):
@@ -37,6 +43,7 @@ class PinResetBody(BaseModel):
 
 class ContributorPatch(BaseModel):
     language_pair_id: str = Field(..., min_length=24, max_length=24)
+    role: AccountRoleLiteral | None = None
 
 
 class ContributorKpiOut(BaseModel):
@@ -67,6 +74,7 @@ def _out(doc: dict) -> ContributorOut:
         phone_e164=str(doc.get("phone_e164", "")),
         language_pair_id=str(doc.get("language_pair_id", "")),
         disabled=bool(doc.get("disabled")),
+        role=normalize_account_role(doc.get("role")),
     )
 
 
@@ -180,10 +188,13 @@ async def patch_contributor(
     pair = await get_pair_by_id(pid)
     if not pair:
         raise HTTPException(status_code=404, detail="Language pair not found")
+    updates: dict = {"language_pair_id": pid}
+    if body.role is not None:
+        updates["role"] = normalize_account_role(body.role)
     db = get_database()
     r = await db[COLLECTION].update_one(
         {"_id": oid},
-        {"$set": {"language_pair_id": pid}},
+        {"$set": updates},
     )
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
@@ -193,10 +204,21 @@ async def patch_contributor(
 
 
 @router.get("", response_model=list[ContributorOut])
-async def list_contributors(_: AdminIdentity = Depends(require_admin)):
+async def list_contributors(
+    role: AccountRoleLiteral | None = Query(
+        None, description="Optional filter: contributor or reviewer"
+    ),
+    _: AdminIdentity = Depends(require_admin),
+):
     db = get_database()
+    q: dict = {}
+    if role == "reviewer":
+        q["role"] = "reviewer"
+    elif role == "contributor":
+        # Include legacy docs with missing role as contributors.
+        q["$or"] = [{"role": "contributor"}, {"role": {"$exists": False}}, {"role": None}]
     items: list[ContributorOut] = []
-    async for doc in db[COLLECTION].find({}).sort("phone_e164", 1):
+    async for doc in db[COLLECTION].find(q).sort("phone_e164", 1):
         items.append(_out(doc))
     return items
 
@@ -219,6 +241,7 @@ async def create_contributor(body: ContributorCreate, admin: AdminIdentity = Dep
     if not pair:
         raise HTTPException(status_code=404, detail="Language pair not found")
 
+    account_role = normalize_account_role(body.role)
     db = get_database()
     if await db[COLLECTION].find_one({"phone_e164": phone}):
         raise HTTPException(status_code=409, detail="Phone already registered")
@@ -227,6 +250,7 @@ async def create_contributor(body: ContributorCreate, admin: AdminIdentity = Dep
         "phone_e164": phone,
         "pin_hash": _hash_pin(body.pin.strip()),
         "language_pair_id": pid,
+        "role": account_role,
         "created_by_admin_email": admin.email,
         "disabled": False,
         "created_at": datetime.now(timezone.utc),
