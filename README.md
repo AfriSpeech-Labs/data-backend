@@ -8,8 +8,8 @@ This folder contains the FastAPI backend for the Speech Parallel Data App.
 
 If you’re looking for the full monorepo overview (web/admin-web/mobile/scripts), see the project root `[README.md](../README.md)`.
 
-> **Deployment:** The API runs on **Vercel** (serverless) via `api/index.py` +
-> `vercel.json`. See [Deploy to Vercel](#deploy-to-vercel). The MMS (torch) TTS
+> **Deployment:** The API runs on **Vercel** (serverless) via the root `asgi.py`
+> entrypoint (auto-detected). See [Deploy to Vercel](#deploy-to-vercel). The MMS (torch) TTS
 > stack was removed; all server-side TTS synthesis is **offline-only** now (see
 > [Offline TTS workflow](#offline-tts-workflow)). Railway/Docker files remain in
 > the repo marked **LEGACY**.
@@ -53,7 +53,7 @@ Run the API (either entrypoint works locally):
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 # or match the Vercel entrypoint:
-uvicorn api.index:app --reload --host 0.0.0.0 --port 8000
+uvicorn asgi:app --reload --host 0.0.0.0 --port 8000
 ```
 
 - Health check: `GET /health` → `{"status":"ok"}`
@@ -306,11 +306,19 @@ The contributor web app routes by `role` from login/`/me`. If you still see Home
 
 ## Deploy to Vercel
 
-The API runs as a single ASGI function on Vercel:
+The API runs as a single ASGI function on Vercel. Vercel auto-detects FastAPI
+from `requirements.txt`, loads the top-level `app` from the root entrypoint, and
+routes **every** request to it — no rewrites needed.
 
-- `[api/index.py](api/index.py)` imports the FastAPI `app` and exposes it as the handler.
-- `[vercel.json](vercel.json)` rewrites **all** paths to that function (Python 3.12, 60s max duration).
+- `[asgi.py](asgi.py)` (project root) imports the FastAPI `app` from `app/main.py`. Vercel recognizes this entrypoint filename and the top-level `app` variable.
+- `[vercel.json](vercel.json)` only sets per-function `maxDuration`/`memory` (keyed by `asgi.py`). No `rewrites`, no `runtime` field.
+- `[.python-version](.python-version)` pins Python `3.12`.
 - `[.vercelignore](.vercelignore)` keeps the bundle small (no venv, scripts, legacy Docker files, or TTS toolchain).
+
+> **Do not** add a `rewrites` block or an `api/` entrypoint. That triggers
+> Vercel's legacy file-based function mode, where the function receives
+> `/api/index` as the path and FastAPI returns `{"detail":"Not Found"}` for
+> every route.
 
 ### One-time setup
 
