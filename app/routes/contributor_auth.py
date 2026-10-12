@@ -37,6 +37,10 @@ class MeResponse(BaseModel):
     pair_id: str
     phone_e164: str
     role: AccountRole = "contributor"
+    gender: str | None = None
+    age_range: str | None = None
+    age_category: str | None = None
+    display_name: str | None = None
 
 
 def _validate_pin_format(pin: str) -> bool:
@@ -121,9 +125,16 @@ async def contributor_me(identity: ContributorIdentity = Depends(require_account
     doc = await db[COLLECTION].find_one({"_id": ObjectId(identity.sub)})
     if not doc:
         raise HTTPException(status_code=401, detail="User not found")
+    from app.services.demographics import age_category_for_range
+
+    age_range = doc.get("age_range")
     return MeResponse(
         user_id=str(doc["_id"]),
         pair_id=str(doc.get("language_pair_id")),
         phone_e164=str(doc.get("phone_e164", "")),
         role=normalize_account_role(doc.get("role")),
+        gender=doc.get("gender"),
+        age_range=age_range,
+        age_category=doc.get("age_category") or age_category_for_range(age_range),
+        display_name=doc.get("display_name"),
     )

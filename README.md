@@ -338,7 +338,7 @@ routes **every** request to it — no rewrites needed.
    | `MONGODB_URI` | yes | Atlas `mongodb+srv://...` recommended |
    | `DATABASE_NAME` | yes | e.g. `speech_parallel` |
    | `REQUIRE_R2` | yes | `true` — enforces R2 + CORS in prod |
-   | `CORS_ORIGINS` | yes | comma-separated exact frontend origins (no `*`) |
+   | `CORS_ORIGINS` | yes | comma-separated exact frontend origins (no `*`). The API runs on Vercel; the contributor/admin frontends are hosted separately (e.g. Railway), so list those deployed origins here — the frontend's API base URL points at `https://data-backend-one.vercel.app`. |
    | `ADMIN_JWT_SECRET` | yes | long random secret |
    | `ADMIN_COOKIE_SECURE` | yes | `true` (HTTPS) |
    | `ADMIN_COOKIE_SAMESITE` | yes | `none` (cross-site admin UI) |
@@ -397,7 +397,7 @@ serverless timeout. Two datasets are supported, each with its own repo:
 
 | `dataset` | Source collection | Records pushed | Per-pair repo field |
 | --- | --- | --- | --- |
-| `speech` (default) | `speech_parallel` | `status == "submitted"` with source+target audio | `hf_repo_id` |
+| `speech` (default) | `speech_parallel` | `status == "submitted"` with target (spoken) audio; source/English audio optional | `hf_repo_id` |
 | `text` | `parallel_text_corpus` | `task_type == "translation"`, `status == "submitted"`, non-empty `text_source` **and** `text_target` | `hf_text_repo_id` |
 
 - Set `HF_TOKEN` (write access) in the environment.
@@ -436,6 +436,77 @@ Logic is verified by `scripts/check_hf_sync.py` (no external services needed):
 ```bash
 python scripts/check_hf_sync.py
 ```
+
+### Speech dataset metadata (ASR / TTS / TTST)
+
+The same recordings serve three tasks, so each pushed speech record emits a
+self-describing per-record shard (`data/metadata/<id>.jsonl`):
+
+| Field | Meaning |
+| --- | --- |
+| `transcript` | Spoken target-language text — ASR ground-truth label and TTS input. |
+| `translation_en` | English translation (optional) — speech-translation (TTST) input. |
+| `audio` | Target (spoken) WAV path; always present. |
+| `source_audio` | English/source WAV path when present (optional). |
+| `speaker_id` | Contributor id (stable voice key for TTS/TTST). |
+| `gender`, `age_range`, `age_category` | Speaker demographics (admin-set). |
+| `sample_rate`, `duration`, `snr` | Measured audio quality. |
+| `pair_slug`, `language`, `status` | Scope and state. |
+
+Task mapping: **ASR** uses target audio + `transcript`; **TTS** uses `transcript`
++ target audio (+ `speaker_id`/demographics); **TTST** uses `translation_en` +
+target audio. The target (spoken) recording is required; source/English audio is
+optional.
+
+## Speech submission quality guard (backend)
+
+`POST`/`PUT /api/audio/{id}/swahili` enforce four cheap quality checks in
+`app/services/audio_quality.py` (stdlib only, no numpy) before storing, via
+`_save_swahili_for_doc`. Failures return **HTTP 422** with the contributor-facing
+message. SNR/noise is **not** checked here — that is client-only.
+
+| Check | Rule | 422 message |
+| --- | --- | --- |
+| Sample rate | ≥ 24 kHz | `Your device recorded in low quality` |
+| Peak level | ≥ 0.05 | `Too quiet: move closer…` |
+| Clipping | < 0.1% of samples | `Too loud or too close…` |
+| Length | duration within 50–150% of expected (+1 s buffer); skipped when the item has no transcript | `Recording cut off, or a long silence…` |
+
+Expected duration = word count of the item's **target transcript** × `SECONDS_PER_WORD`
+(0.4, tunable). The measured `sample_rate`, `duration`, `peak`, and `clipped_ratio`
+are persisted on the speech doc for the dataset metadata above. Verified by
+`scripts/check_audio_quality.py` (no external services):
+
+```bash
+python scripts/check_audio_quality.py
+```
+
+## Contributor demographics (admin-set)
+
+Contributors are created/edited by admins (`/api/admin/contributors` create/patch).
+Demographic fields on `contributor_users` feed the speech dataset metadata:
+
+- `gender`: `male` | `female` | `other` | `prefer_not_to_say`
+- `age_range`: selected band (below); `age_category` is **derived server-side**
+- `display_name`: optional
+- `guardian_consent`: boolean; relevant when `age_range` is `13-17` (minors). The
+  flag is a place to record consent — obtaining/verifying it is an operational
+  responsibility, not enforced by the API.
+
+| Age range | Age category |
+| --- | --- |
+| 13–17 | adolescent |
+| 18–24 | youth |
+| 25–34 | adult_early |
+| 35–44 | adult |
+| 45–54 | middle_aged_adult |
+| 55–64 | older_adult |
+| 65+ | senior |
+| prefer_not_to_say | unset |
+
+The mapping lives in `app/services/demographics.py`. These fields are also
+returned by `GET /api/contributor/auth/me` so the dataset sync can read them.
+There is no contributor self-service profile endpoint (admin-set only).
 
 ## Legacy: Docker / Railway (not used for the live API)
 

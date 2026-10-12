@@ -124,12 +124,33 @@ async def _fake_tgt(doc):
     return b"TGT" if doc.get("_has_tgt", True) else None
 
 
-def install_fakes(coll):
+# Fake contributor_users collection for speaker-demographics lookup in sync_batch.
+class _FakeContributors:
+    def __init__(self, by_id):
+        self._by_id = by_id
+
+    async def find_one(self, q):
+        return self._by_id.get(q.get("_id"))
+
+
+class _FakeDb:
+    def __init__(self, contributors):
+        self._contributors = _FakeContributors(contributors)
+
+    def __getitem__(self, name):
+        if name == "contributor_users":
+            return self._contributors
+        raise KeyError(name)
+
+
+def install_fakes(coll, contributors=None):
     hf.get_default_pair_document = _fake_default_pair
     hf.get_pair_by_id = _fake_pair_by_id
     hf.load_source_wav_bytes = _fake_src
     hf.load_target_wav_bytes = _fake_tgt
     hf._coll = lambda: coll  # type: ignore
+    _db = _FakeDb(contributors or {})
+    hf.get_database = lambda: _db  # type: ignore
     hf.settings.hf_token = "fake-token"
 
 
@@ -165,7 +186,9 @@ async def main():
          "text_english": "b", "text_swahili": "bb", "_has_tgt": False},  # skipped
         {"_id": oid(3), "status": "pending", "pair_id": oid(100)},  # excluded
         {"_id": oid(4), "status": "submitted", "pair_id": oid(100),
-         "text_english": "d", "text_swahili": "dd"},
+         "text_english": "d", "text_swahili": "dd",
+         "submitted_by_user_id": oid(200), "sample_rate": 24000, "duration": 2.0,
+         "snr": 30.0, "_has_src": False},  # target-only (contributor ASR style)
         {"_id": oid(5), "status": "submitted", "pair_id": oid(100),
          "text_english": "e", "text_swahili": "ee"},
         {"_id": oid(6), "status": "submitted", "pair_id": oid(100),
@@ -188,7 +211,10 @@ async def main():
 
     # --- Test 2: continue from cursor, real push via fake HF api ---
     coll = FakeCollection(docs)
-    install_fakes(coll)
+    contributors = {
+        oid(200): {"gender": "female", "age_range": "25-34", "age_category": "adult_early"},
+    }
+    install_fakes(coll, contributors)
     api = FakeHfApi()
     r2 = await hf.sync_batch(
         repo_id="acme/ds", pair_oid=oid(100), cursor=str(oid(2)), limit=10, _hf_api=api
@@ -200,13 +226,41 @@ async def main():
           lambda: assert_eq(r2.done, True, "done"))
     check("one commit issued for the batch",
           lambda: assert_eq(len(api.commits), 1, "commits"))
-    # 2 records * (src+tgt+meta) = 6 operations
-    check("commit carries audio+metadata ops",
-          lambda: assert_eq(len(api.commits[0]["operations"]), 6, "operations"))
+    # id4 target-only (tgt+meta=2) + id5 with source (tgt+src+meta=3) = 5 ops
+    check("target-only record omits source op",
+          lambda: assert_eq(len(api.commits[0]["operations"]), 5, "operations"))
     check("synced records stamped in DB",
           lambda: assert_eq(coll.docs[oid(4)].get("hf_repo_id"), "acme/ds", "hf_repo_id stamp"))
     check("already-synced record not re-pushed",
           lambda: assert_eq(oid(6) in [ObjectId(i) for i in r2.pushed_ids], False, "skip synced"))
+
+    # Inspect the emitted metadata for ASR/TTS/TTST fields on id4.
+    def _meta_for(ops, meta_suffix):
+        import json as _json
+        for op in ops:
+            p = getattr(op, "path_in_repo", None) or getattr(op, "path", "")
+            if p.endswith(meta_suffix):
+                body = getattr(op, "path_or_fileobj", b"")
+                if hasattr(body, "read"):
+                    body = body.read()
+                return _json.loads(bytes(body).decode("utf-8"))
+        return None
+
+    meta4 = _meta_for(api.commits[0]["operations"], f"{str(oid(4))}.jsonl")
+    check("metadata emits transcript (target text)",
+          lambda: assert_eq(meta4 and meta4.get("transcript"), "dd", "transcript"))
+    check("metadata emits translation_en",
+          lambda: assert_eq(meta4 and meta4.get("translation_en"), "d", "translation_en"))
+    check("metadata emits speaker_id",
+          lambda: assert_eq(meta4 and meta4.get("speaker_id"), str(oid(200)), "speaker_id"))
+    check("metadata emits demographics",
+          lambda: assert_eq(
+              meta4 and (meta4.get("gender"), meta4.get("age_category")),
+              ("female", "adult_early"), "demographics"))
+    check("metadata emits quality metrics",
+          lambda: assert_eq(
+              meta4 and (meta4.get("sample_rate"), meta4.get("snr")),
+              (24000, 30.0), "quality"))
 
     # --- Test 3: resync re-pushes everything submitted (incl. already synced) ---
     coll = FakeCollection(docs)

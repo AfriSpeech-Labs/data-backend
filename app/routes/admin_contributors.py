@@ -14,12 +14,21 @@ from app.auth_contributor import normalize_account_role
 from app.config import settings
 from app.db import get_database
 from app.phone_norm import normalize_phone_e164
+from app.services.demographics import (
+    age_category_for_range,
+    normalize_age_range,
+    normalize_gender,
+)
 from app.services.language_pairs import get_pair_by_id
 
 router = APIRouter(prefix="/api/admin/contributors", tags=["admin-contributors"])
 COLLECTION = "contributor_users"
 
 AccountRoleLiteral = Literal["contributor", "reviewer"]
+GenderLiteral = Literal["male", "female", "other", "prefer_not_to_say"]
+AgeRangeLiteral = Literal[
+    "13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+", "prefer_not_to_say"
+]
 
 
 class ContributorCreate(BaseModel):
@@ -27,6 +36,11 @@ class ContributorCreate(BaseModel):
     pin: str = Field(..., min_length=4)
     language_pair_id: str = Field(..., min_length=24, max_length=24)
     role: AccountRoleLiteral = "contributor"
+    # Demographics (admin-set, optional). age_category is derived server-side.
+    gender: GenderLiteral | None = None
+    age_range: AgeRangeLiteral | None = None
+    display_name: str | None = None
+    guardian_consent: bool | None = None
 
 
 class ContributorOut(BaseModel):
@@ -35,6 +49,11 @@ class ContributorOut(BaseModel):
     language_pair_id: str
     disabled: bool
     role: AccountRoleLiteral = "contributor"
+    gender: str | None = None
+    age_range: str | None = None
+    age_category: str | None = None
+    display_name: str | None = None
+    guardian_consent: bool | None = None
 
 
 class PinResetBody(BaseModel):
@@ -44,6 +63,32 @@ class PinResetBody(BaseModel):
 class ContributorPatch(BaseModel):
     language_pair_id: str = Field(..., min_length=24, max_length=24)
     role: AccountRoleLiteral | None = None
+    gender: GenderLiteral | None = None
+    age_range: AgeRangeLiteral | None = None
+    display_name: str | None = None
+    guardian_consent: bool | None = None
+
+
+def _demographic_fields(
+    gender: object,
+    age_range: object,
+    display_name: object,
+    guardian_consent: object,
+) -> dict:
+    """Build the demographic subset of a doc update; derives age_category."""
+    out: dict = {}
+    g = normalize_gender(gender)
+    if g is not None:
+        out["gender"] = g
+    ar = normalize_age_range(age_range)
+    if ar is not None:
+        out["age_range"] = ar
+        out["age_category"] = age_category_for_range(ar)
+    if isinstance(display_name, str):
+        out["display_name"] = display_name.strip() or None
+    if isinstance(guardian_consent, bool):
+        out["guardian_consent"] = guardian_consent
+    return out
 
 
 class ContributorKpiOut(BaseModel):
@@ -69,12 +114,19 @@ def _hash_pin(pin: str) -> bytes:
 
 
 def _out(doc: dict) -> ContributorOut:
+    age_range = doc.get("age_range")
     return ContributorOut(
         id=str(doc["_id"]),
         phone_e164=str(doc.get("phone_e164", "")),
         language_pair_id=str(doc.get("language_pair_id", "")),
         disabled=bool(doc.get("disabled")),
         role=normalize_account_role(doc.get("role")),
+        gender=doc.get("gender"),
+        age_range=age_range,
+        # Prefer stored category; derive if missing (legacy docs).
+        age_category=doc.get("age_category") or age_category_for_range(age_range),
+        display_name=doc.get("display_name"),
+        guardian_consent=doc.get("guardian_consent"),
     )
 
 
@@ -191,6 +243,11 @@ async def patch_contributor(
     updates: dict = {"language_pair_id": pid}
     if body.role is not None:
         updates["role"] = normalize_account_role(body.role)
+    updates.update(
+        _demographic_fields(
+            body.gender, body.age_range, body.display_name, body.guardian_consent
+        )
+    )
     db = get_database()
     r = await db[COLLECTION].update_one(
         {"_id": oid},
@@ -255,6 +312,9 @@ async def create_contributor(body: ContributorCreate, admin: AdminIdentity = Dep
         "disabled": False,
         "created_at": datetime.now(timezone.utc),
         "pin_updated_at": datetime.now(timezone.utc),
+        **_demographic_fields(
+            body.gender, body.age_range, body.display_name, body.guardian_consent
+        ),
     }
     res = await db[COLLECTION].insert_one(doc)
     doc["_id"] = res.inserted_id

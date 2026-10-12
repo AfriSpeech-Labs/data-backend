@@ -103,17 +103,74 @@ async def _resolve_pair_for_doc(doc: dict, pair_cache: dict) -> dict | None:
     return pair
 
 
-def _metadata_record(doc: dict, id_str: str, pair: dict | None,
-                     src_path: str, tgt_path: str) -> dict:
+async def _speaker_demographics(doc: dict, cache: dict) -> dict:
+    """Look up the submitting contributor's demographics (cached per batch).
+
+    Returns {speaker_id, gender, age_range, age_category}. speaker_id is the
+    contributor's id (stable voice key for TTS/TTST). Missing contributor →
+    speaker_id present, demographics null.
+    """
+    from app.services.demographics import age_category_for_range
+
+    sid = doc.get("submitted_by_user_id")
+    speaker_id = str(sid) if sid is not None else None
+    out = {
+        "speaker_id": speaker_id,
+        "gender": None,
+        "age_range": None,
+        "age_category": None,
+    }
+    if sid is None:
+        return out
+    if speaker_id in cache:
+        return {**out, **cache[speaker_id]}
+    cu = await get_database()["contributor_users"].find_one({"_id": sid})
+    demo = {"gender": None, "age_range": None, "age_category": None}
+    if cu:
+        ar = cu.get("age_range")
+        demo = {
+            "gender": cu.get("gender"),
+            "age_range": ar,
+            "age_category": cu.get("age_category") or age_category_for_range(ar),
+        }
+    cache[speaker_id] = demo
+    return {**out, **demo}
+
+
+async def _metadata_record(
+    doc: dict,
+    id_str: str,
+    pair: dict | None,
+    src_path: str,
+    tgt_path: str,
+    speaker_cache: dict,
+) -> dict:
+    """ASR/TTS/TTST-ready metadata.
+
+    ``transcript`` is the spoken target-language text (ASR label / TTS input);
+    ``translation_en`` is the optional English (TTST input). Audio quality +
+    speaker demographics support TTS/TTST voice modeling.
+    """
+    demo = await _speaker_demographics(doc, speaker_cache)
     return {
         "id": id_str,
         "pair_slug": pair.get("slug") if pair else "",
+        "language": (pair.get("audio_folder_target") if pair else None),
+        "audio": tgt_path,
         "source_audio": src_path,
-        "target_audio": tgt_path,
-        "text_source": doc.get("text_english") or "",
-        "text_target": doc.get("text_swahili") or "",
-        "length_source": doc.get("length_english"),
-        "length_target": doc.get("length_swahili"),
+        # Spoken target-language transcript = ASR ground truth / TTS input.
+        "transcript": doc.get("text_swahili") or "",
+        # Optional English translation for speech-translation (TTST).
+        "translation_en": doc.get("text_english") or "",
+        # Speaker + demographics (TTS/TTST voice mapping).
+        "speaker_id": demo["speaker_id"],
+        "gender": demo["gender"],
+        "age_range": demo["age_range"],
+        "age_category": demo["age_category"],
+        # Measured audio quality.
+        "sample_rate": doc.get("sample_rate"),
+        "duration": doc.get("duration", doc.get("length_swahili")),
+        "snr": doc.get("snr"),
         "status": doc.get("status", "submitted"),
     }
 
@@ -165,6 +222,7 @@ async def sync_batch(
     # Lazily import huggingface_hub so the module imports without the dep in tests.
     operations = []
     pair_cache: dict = {}
+    speaker_cache: dict = {}
     pushed_ids: list[str] = []
 
     if _hf_api is None and not dry_run:
@@ -186,23 +244,27 @@ async def sync_batch(
             src_path = f"data/audio/source/{id_str}_src.wav"
             tgt_path = f"data/audio/target/{id_str}_tgt.wav"
 
-        src_bytes = await load_source_wav_bytes(doc)
+        # ASR/TTS/TTST require the target (spoken) recording. Source (English)
+        # audio is optional and only present for speech-to-speech style items.
         tgt_bytes = await load_target_wav_bytes(doc)
-        # A submitted record must have target audio; skip anything incomplete.
-        if not src_bytes or not tgt_bytes:
+        if not tgt_bytes:
             result.skipped += 1
             continue
+        src_bytes = await load_source_wav_bytes(doc)
 
-        meta = _metadata_record(doc, id_str, pair, src_path, tgt_path)
+        meta = await _metadata_record(
+            doc, id_str, pair, src_path if src_bytes else "", tgt_path, speaker_cache
+        )
         meta_path = f"data/metadata/{id_str}.jsonl"
 
         if not dry_run:
             operations.append(
-                CommitOperationAdd(path_in_repo=src_path, path_or_fileobj=src_bytes)
-            )
-            operations.append(
                 CommitOperationAdd(path_in_repo=tgt_path, path_or_fileobj=tgt_bytes)
             )
+            if src_bytes:
+                operations.append(
+                    CommitOperationAdd(path_in_repo=src_path, path_or_fileobj=src_bytes)
+                )
             operations.append(
                 CommitOperationAdd(
                     path_in_repo=meta_path,

@@ -18,7 +18,6 @@ from app.models import (
     AudioDurationStatsResponse,
     BulkCsvResponse,
 )
-from app.services.audio_duration import get_wav_duration_seconds
 from app.services.speech_insert import insert_item_from_english_wav
 from app.services.speech_parallel_read import (
     COLLECTION,
@@ -213,17 +212,31 @@ async def _save_swahili_for_doc(
 ) -> dict:
     """Upload Swahili bytes to R2 or GridFS and update doc. Preserves existing text_swahili (e.g. from CSV)."""
     from app.services.speech_parallel_read import _pair_for_doc
+    from app.services.audio_quality import assert_quality, expected_seconds_for_text
 
-    try:
-        length_swahili = get_wav_duration_seconds(file_data)
-    except Exception:
-        length_swahili = 0.0
+    # Quality guard: enforce the four cheap checks before storing. Length is
+    # keyed off the target-language transcript (reference text if present, else
+    # the text submitted with this recording); skipped when there is no text.
+    existing_target = doc.get("text_swahili")
+    target_text = (
+        str(existing_target).strip()
+        if existing_target is not None and str(existing_target).strip()
+        else (form_text_swahili or "").strip()
+    )
+    expected_seconds = expected_seconds_for_text(target_text)
+    metrics = assert_quality(file_data, expected_seconds)
+
     db = get_database()
     pair = await _pair_for_doc(doc)
     oid_str = str(doc["_id"])
     payload: dict = {
-        "length_swahili": length_swahili,
+        "length_swahili": metrics["duration_s"],
         "status": "submitted",
+        # ASR/TTS/TTST metadata: speaker + measured audio quality.
+        "sample_rate": metrics["sample_rate"],
+        "duration": metrics["duration_s"],
+        "peak": metrics["peak_ratio"],
+        "clipped_ratio": metrics["clipped_ratio"],
     }
     if contributor_user_id:
         try:
