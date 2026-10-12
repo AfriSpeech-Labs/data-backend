@@ -1,4 +1,8 @@
-"""Audio API routes: bulk upload, list, stream, submit Swahili."""
+"""Audio API routes: bulk upload, list, stream, submit target-language recording.
+
+Note: document keys like text_swahili / audio_swahili / length_swahili are
+legacy names from the Swahili-only origin; they now hold the pair's TARGET
+language data regardless of language (kept as-is to avoid a data migration)."""
 import io
 from bson import ObjectId
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
@@ -210,7 +214,11 @@ async def _save_swahili_for_doc(
     form_text_swahili: str | None = None,
     contributor_user_id: str | None = None,
 ) -> dict:
-    """Upload Swahili bytes to R2 or GridFS and update doc. Preserves existing text_swahili (e.g. from CSV)."""
+    """Store the target-language recording to R2/GridFS and mark the item submitted.
+
+    ``text_swahili`` (legacy key) holds the target transcript; it is preserved when
+    already set (e.g. from a speech-prompt import) and only back-filled from the
+    submitted form text when the item had no transcript."""
     from app.services.speech_parallel_read import _pair_for_doc
     from app.services.audio_quality import assert_quality, expected_seconds_for_text
 

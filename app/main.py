@@ -36,6 +36,7 @@ from app.routes.admin_batch_claims import router as admin_batch_claims_router
 from app.routes.admin_contributors import router as admin_contributors_router
 from app.routes.admin_datasets import router as admin_datasets_router
 from app.routes.admin_language_pairs import router as admin_language_pairs_router
+from app.routes.admin_speech_prompts import router as admin_speech_prompts_router
 from app.routes.admin_synth_pairs import router as admin_synth_pairs_router
 from app.routes.admin_text_corpus import router as admin_text_corpus_router
 from app.routes.audio import router as audio_router
@@ -75,6 +76,7 @@ app.include_router(admin_audio_router)
 app.include_router(admin_datasets_router)
 app.include_router(admin_synth_pairs_router)
 app.include_router(admin_text_corpus_router)
+app.include_router(admin_speech_prompts_router)
 
 
 @app.on_event("startup")

@@ -1,4 +1,8 @@
-"""Insert speech_parallel documents from English WAV bytes + optional texts."""
+"""Insert speech_parallel documents.
+
+Document keys text_english / text_swahili / length_* / audio_* are legacy names
+(Swahili-only origin). They now hold source and TARGET-language data for any pair;
+kept as-is to avoid a DB migration (see Option B)."""
 import io
 
 from bson import ObjectId
@@ -69,5 +73,47 @@ async def insert_item_from_english_wav(
         )
         doc["audio_english"] = file_id
 
+    await db[COLLECTION].insert_one(doc)
+    return _serialize_id(oid)
+
+
+async def insert_speech_prompt(
+    transcript: str,
+    translation: str | None = None,
+    pair_oid: ObjectId | None = None,
+    csv_row: int | None = None,
+) -> str:
+    """Create one audio-less, pending speech prompt item.
+
+    Transcript-first flow: the admin seeds the target-language sentence
+    (``transcript``, stored in legacy key ``text_swahili``) that the contributor
+    will read aloud, plus an optional source/English translation (stored in
+    ``text_english`` for TTST). No audio is attached — the contributor's
+    recording is added later via the submit endpoint.
+
+    ``pair_oid`` must be a resolved language-pair ObjectId.
+    """
+    t = (transcript or "").strip()
+    if not t:
+        raise ValueError("transcript is required")
+    tr = (translation or "").strip() or None
+
+    db = get_database()
+    oid = ObjectId()
+    doc: dict = {
+        "_id": oid,
+        "pair_id": pair_oid,
+        "status": "pending",
+        # Legacy keys kept for compatibility (Option B): text_swahili = target
+        # transcript (ASR label / read-aloud prompt), text_english = source.
+        "text_swahili": t,
+        "text_english": tr,
+        "length_english": None,
+        "length_swahili": None,
+        "audio_english": None,
+        "audio_swahili": None,
+        "source": "speech_prompt_csv",
+        "csv_row": csv_row,
+    }
     await db[COLLECTION].insert_one(doc)
     return _serialize_id(oid)
