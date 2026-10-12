@@ -1,17 +1,21 @@
+# LEGACY (Railway / container deploy). The API now targets Vercel serverless
+# (see vercel.json + api/index.py). This Dockerfile is kept for self-hosting /
+# running the offline TTS toolchain in a container. MMS (torch) was removed.
+#
 # Speech Parallel Data API
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# ffmpeg for pydub; libgomp1 for torch CPU runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libgomp1 \
+# ffmpeg for pydub (edge-tts MP3 -> WAV). Only needed when running the optional
+# TTS toolchain (requirements-tts.txt) in-container.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-mms.txt ./
+COPY requirements.txt requirements-tts.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-mms.txt \
-    && python -c "import sentencepiece; import torch; from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('facebook/mms-tts-aka', use_fast=False); print('MMS tokenizer OK', torch.__version__)"
+    && pip install --no-cache-dir -r requirements-tts.txt
 
 COPY app/ ./app/
 COPY run.py .

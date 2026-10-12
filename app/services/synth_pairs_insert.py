@@ -1,6 +1,5 @@
 """Insert parallel_synth_pairs documents (dual TTS) into isolated collection + GridFS."""
 import io
-import os
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -35,11 +34,10 @@ async def insert_synth_pair(
     from app.r2_storage import put_object_bytes, r2_enabled
     from app.services.language_pairs import get_pair_by_id, resolve_default_pair, synth_audio_keys
 
-    is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
-    if is_railway and not r2_enabled():
+    if settings.require_r2 and not r2_enabled():
         raise RuntimeError(
-            "R2 is required on Railway. Set R2_ENDPOINT_URL, R2_BUCKET_NAME, "
-            "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY."
+            "R2 is required in this environment. Set R2_ENDPOINT_URL, R2_BUCKET_NAME, "
+            "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (or REQUIRE_R2=false for local dev)."
         )
 
     gridfs = get_gridfs_synth()
@@ -64,8 +62,8 @@ async def insert_synth_pair(
     sw_id = None
     r2_src = None
     r2_tgt = None
-    if r2_enabled() or is_railway:
-        # Store synth audio in R2 (required on Railway).
+    if r2_enabled() or settings.require_r2:
+        # Store synth audio in R2 (required when REQUIRE_R2=true).
         oid_for_key = ObjectId()
         id_str_for_key = str(oid_for_key)
         r2_src, _ = synth_audio_keys(pair, id_str_for_key, "source")

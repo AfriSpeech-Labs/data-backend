@@ -1,0 +1,292 @@
+"""Dependency-free verification of app.services.hf_sync.sync_batch.
+
+Runs without pytest / MongoDB / HuggingFace by injecting fakes. Exercises:
+- query selection (submitted-only, not-yet-synced, pair scope, cursor > _id)
+- batch bounding + has_more / next_cursor
+- skip of records missing audio
+- dry-run (no HF calls, no DB writes)
+- real-ish push path (fake HF api) + hf_synced_at stamping
+
+Usage (from backend/):  python scripts/check_hf_sync.py
+Exits non-zero on failure.
+"""
+import asyncio
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from bson import ObjectId  # noqa: E402
+
+
+def oid(n: int) -> ObjectId:
+    return ObjectId(f"{n:024x}")
+
+
+class FakeCursor:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def sort(self, *_a, **_k):
+        return self
+
+    def limit(self, n):
+        self._docs = self._docs[:n]
+        return self
+
+    def __aiter__(self):
+        async def gen():
+            for d in self._docs:
+                yield d
+        return gen()
+
+
+class FakeCollection:
+    def __init__(self, docs):
+        # store copies so we can observe updates
+        self.docs = {d["_id"]: dict(d) for d in docs}
+        self.update_calls = []
+
+    def _match(self, q):
+        out = []
+        for d in self.docs.values():
+            ok = True
+            for k, v in q.items():
+                if k == "_id" and isinstance(v, dict) and "$gt" in v:
+                    if not d["_id"] > v["$gt"]:
+                        ok = False
+                        break
+                elif isinstance(v, dict) and "$exists" in v:
+                    if (k in d) != v["$exists"]:
+                        ok = False
+                        break
+                elif isinstance(v, dict) and "$nin" in v:
+                    if d.get(k) in v["$nin"]:
+                        ok = False
+                        break
+                else:
+                    if d.get(k) != v:
+                        ok = False
+                        break
+            if ok:
+                out.append(d)
+        out.sort(key=lambda d: d["_id"])
+        return out
+
+    def find(self, q):
+        return FakeCursor([dict(d) for d in self._match(q)])
+
+    async def update_many(self, q, update):
+        self.update_calls.append((q, update))
+        ids = q["_id"]["$in"]
+        for i in ids:
+            self.docs[i].update(update["$set"])
+        return None
+
+
+class FakeHfApi:
+    def __init__(self):
+        self.commits = []
+        self.repos = []
+
+    def create_repo(self, **kw):
+        self.repos.append(kw)
+
+    def create_commit(self, **kw):
+        self.commits.append(kw)
+
+
+# ---- Monkeypatch collaborators -------------------------------------------------
+import app.services.hf_sync as hf  # noqa: E402
+
+FAKE_PAIR = {
+    "slug": "swahili-english",
+    "audio_folder_source": "english",
+    "audio_folder_target": "swahili",
+    "file_suffix_source": "en",
+    "file_suffix_target": "sw",
+}
+
+
+async def _fake_default_pair():
+    return FAKE_PAIR
+
+
+async def _fake_pair_by_id(_pid):
+    return FAKE_PAIR
+
+
+async def _fake_src(doc):
+    return b"SRC" if doc.get("_has_src", True) else None
+
+
+async def _fake_tgt(doc):
+    return b"TGT" if doc.get("_has_tgt", True) else None
+
+
+def install_fakes(coll):
+    hf.get_default_pair_document = _fake_default_pair
+    hf.get_pair_by_id = _fake_pair_by_id
+    hf.load_source_wav_bytes = _fake_src
+    hf.load_target_wav_bytes = _fake_tgt
+    hf._coll = lambda: coll  # type: ignore
+    hf.settings.hf_token = "fake-token"
+
+
+def install_text_fakes(coll):
+    hf.get_default_pair_document = _fake_default_pair
+    hf.get_pair_by_id = _fake_pair_by_id
+    hf._text_coll = lambda: coll  # type: ignore
+    hf.settings.hf_token = "fake-token"
+
+
+def assert_eq(a, b, msg):
+    if a != b:
+        raise AssertionError(f"{msg}: expected {b!r}, got {a!r}")
+
+
+async def main():
+    failures = 0
+
+    def check(name, fn):
+        nonlocal failures
+        try:
+            fn()
+            print(f"  PASS  {name}")
+        except AssertionError as e:
+            failures += 1
+            print(f"  FAIL  {name}: {e}")
+
+    # Dataset: 4 submitted (1 missing target), 1 pending, 1 already synced.
+    docs = [
+        {"_id": oid(1), "status": "submitted", "pair_id": oid(100),
+         "text_english": "a", "text_swahili": "aa", "length_english": 1.0, "length_swahili": 1.1},
+        {"_id": oid(2), "status": "submitted", "pair_id": oid(100),
+         "text_english": "b", "text_swahili": "bb", "_has_tgt": False},  # skipped
+        {"_id": oid(3), "status": "pending", "pair_id": oid(100)},  # excluded
+        {"_id": oid(4), "status": "submitted", "pair_id": oid(100),
+         "text_english": "d", "text_swahili": "dd"},
+        {"_id": oid(5), "status": "submitted", "pair_id": oid(100),
+         "text_english": "e", "text_swahili": "ee"},
+        {"_id": oid(6), "status": "submitted", "pair_id": oid(100),
+         "hf_synced_at": "already", "text_english": "f", "text_swahili": "ff"},
+    ]
+
+    # --- Test 1: dry run, limit 2, first page ---
+    coll = FakeCollection(docs)
+    install_fakes(coll)
+    r = await hf.sync_batch(repo_id="acme/ds", pair_oid=oid(100), limit=2, dry_run=True)
+    check("dry_run selects submitted+unsynced, honors limit",
+          lambda: assert_eq((r.pushed, r.skipped), (1, 1), "pushed/skipped"))
+    # ids 1 (pushed) and 2 (skipped) consumed; more remain (4,5) -> not done
+    check("dry_run reports not done when more remain",
+          lambda: assert_eq(r.done, False, "done"))
+    check("dry_run advances cursor to last _id in batch",
+          lambda: assert_eq(r.next_cursor, str(oid(2)), "next_cursor"))
+    check("dry_run makes no DB writes",
+          lambda: assert_eq(len(coll.update_calls), 0, "update_calls"))
+
+    # --- Test 2: continue from cursor, real push via fake HF api ---
+    coll = FakeCollection(docs)
+    install_fakes(coll)
+    api = FakeHfApi()
+    r2 = await hf.sync_batch(
+        repo_id="acme/ds", pair_oid=oid(100), cursor=str(oid(2)), limit=10, _hf_api=api
+    )
+    # Remaining submitted+unsynced after _id>2: ids 4 and 5 (6 is already synced).
+    check("resumed page pushes remaining unsynced records",
+          lambda: assert_eq(r2.pushed, 2, "pushed"))
+    check("resumed page is done when exhausted",
+          lambda: assert_eq(r2.done, True, "done"))
+    check("one commit issued for the batch",
+          lambda: assert_eq(len(api.commits), 1, "commits"))
+    # 2 records * (src+tgt+meta) = 6 operations
+    check("commit carries audio+metadata ops",
+          lambda: assert_eq(len(api.commits[0]["operations"]), 6, "operations"))
+    check("synced records stamped in DB",
+          lambda: assert_eq(coll.docs[oid(4)].get("hf_repo_id"), "acme/ds", "hf_repo_id stamp"))
+    check("already-synced record not re-pushed",
+          lambda: assert_eq(oid(6) in [ObjectId(i) for i in r2.pushed_ids], False, "skip synced"))
+
+    # --- Test 3: resync re-pushes everything submitted (incl. already synced) ---
+    coll = FakeCollection(docs)
+    install_fakes(coll)
+    r3 = await hf.sync_batch(repo_id="acme/ds", pair_oid=oid(100), limit=50,
+                             resync=True, dry_run=True)
+    # submitted with audio: ids 1,4,5,6 => 4 pushed; id 2 skipped (no target)
+    check("resync includes previously synced records",
+          lambda: assert_eq((r3.pushed, r3.skipped), (4, 1), "pushed/skipped"))
+
+    # --- Test 4: missing token on real push is rejected ---
+    coll = FakeCollection(docs)
+    install_fakes(coll)
+    hf.settings.hf_token = ""
+    try:
+        await hf.sync_batch(repo_id="acme/ds", limit=1)
+        check("missing token rejected", lambda: (_ for _ in ()).throw(AssertionError("no error")))
+    except hf.HfSyncConfigError:
+        check("missing token rejected", lambda: None)
+
+    # ===== Text-to-text sync (parallel_text_corpus) =====
+    text_docs = [
+        # valid submitted translations
+        {"_id": oid(11), "task_type": "translation", "status": "submitted",
+         "language_pair_id": oid(100), "text_source": "hi", "text_target": "mbote",
+         "source_language": "english", "target_language": "kom"},
+        {"_id": oid(12), "task_type": "translation", "status": "submitted",
+         "language_pair_id": oid(100), "text_source": "bye", "text_target": "kwaheri"},
+        # missing target -> excluded by query
+        {"_id": oid(13), "task_type": "translation", "status": "submitted",
+         "language_pair_id": oid(100), "text_source": "x", "text_target": ""},
+        # pending -> excluded
+        {"_id": oid(14), "task_type": "translation", "status": "pending",
+         "language_pair_id": oid(100), "text_source": "y", "text_target": "yy"},
+        # already synced -> excluded unless resync
+        {"_id": oid(15), "task_type": "translation", "status": "submitted",
+         "language_pair_id": oid(100), "text_source": "z", "text_target": "zz",
+         "hf_text_synced_at": "already"},
+    ]
+
+    # --- Test 5: text dry run selects only valid submitted+unsynced ---
+    tcoll = FakeCollection(text_docs)
+    install_text_fakes(tcoll)
+    t1 = await hf.sync_text_batch(repo_id="acme/txt", pair_oid=oid(100), limit=50, dry_run=True)
+    check("text dry_run selects valid submitted+unsynced only",
+          lambda: assert_eq((t1.pushed, t1.skipped), (2, 0), "pushed/skipped"))
+    check("text dry_run makes no DB writes",
+          lambda: assert_eq(len(tcoll.update_calls), 0, "update_calls"))
+
+    # --- Test 6: text real push via fake HF api ---
+    tcoll = FakeCollection(text_docs)
+    install_text_fakes(tcoll)
+    tapi = FakeHfApi()
+    t2 = await hf.sync_text_batch(repo_id="acme/txt", pair_oid=oid(100), limit=10, _hf_api=tapi)
+    check("text push pushes both valid records",
+          lambda: assert_eq(t2.pushed, 2, "pushed"))
+    check("text push done when exhausted",
+          lambda: assert_eq(t2.done, True, "done"))
+    check("text commit carries one op per record",
+          lambda: assert_eq(len(tapi.commits[0]["operations"]), 2, "operations"))
+    check("text synced records stamped with hf_text_repo_id",
+          lambda: assert_eq(tcoll.docs[oid(11)].get("hf_text_repo_id"), "acme/txt", "stamp"))
+    check("text already-synced record skipped",
+          lambda: assert_eq(oid(15) in [ObjectId(i) for i in t2.pushed_ids], False, "skip synced"))
+
+    # --- Test 7: text resync includes already-synced ---
+    tcoll = FakeCollection(text_docs)
+    install_text_fakes(tcoll)
+    t3 = await hf.sync_text_batch(repo_id="acme/txt", pair_oid=oid(100), limit=50,
+                                  resync=True, dry_run=True)
+    # valid submitted w/ both texts: 11,12,15 => 3 (13 excluded: empty target)
+    check("text resync includes previously synced",
+          lambda: assert_eq(t3.pushed, 3, "pushed"))
+
+    print()
+    if failures:
+        print(f"{failures} check(s) FAILED")
+        sys.exit(1)
+    print("All hf_sync checks passed.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

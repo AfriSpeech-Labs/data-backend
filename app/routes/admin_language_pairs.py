@@ -7,7 +7,7 @@ from typing import Literal
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth_admin import AdminIdentity, require_admin
 from app.db import get_database
@@ -33,12 +33,29 @@ class PairCreate(BaseModel):
     file_suffix_source: str = Field(..., min_length=1, max_length=16)
     file_suffix_target: str = Field(..., min_length=1, max_length=16)
     active: bool = True
+    # HuggingFace dataset repos (owner/name) this pair's data syncs to.
+    # hf_repo_id -> speech/audio dataset; hf_text_repo_id -> text-to-text dataset.
+    hf_repo_id: str | None = None
+    hf_text_repo_id: str | None = None
     tts_source_engine: Literal["edge", "mms"] | None = None
     tts_source_voices: list[str] | None = None
     tts_source_mms_model: str | None = None
     tts_target_engine: Literal["edge", "mms"] | None = None
     tts_target_voices: list[str] | None = None
     tts_target_mms_model: str | None = None
+
+    @field_validator("hf_repo_id", "hf_text_repo_id")
+    @classmethod
+    def _validate_hf_repo_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        parts = s.split("/")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError("HF repo id must be in 'owner/name' form, e.g. acme/kom-text")
+        return s
 
 
 class PairOut(BaseModel):
@@ -50,6 +67,8 @@ class PairOut(BaseModel):
     file_suffix_source: str
     file_suffix_target: str
     active: bool
+    hf_repo_id: str | None = None
+    hf_text_repo_id: str | None = None
     tts_source_engine: str | None = None
     tts_source_voices: list[str] | None = None
     tts_source_mms_model: str | None = None
@@ -66,6 +85,10 @@ class PairSummaryOut(PairOut):
 
 def _tts_fields_from_body(body: PairCreate) -> dict:
     out: dict = {}
+    if body.hf_repo_id is not None:
+        out["hf_repo_id"] = body.hf_repo_id.strip() or None
+    if body.hf_text_repo_id is not None:
+        out["hf_text_repo_id"] = body.hf_text_repo_id.strip() or None
     if body.tts_source_engine is not None:
         out["tts_source_engine"] = body.tts_source_engine
     if body.tts_source_voices is not None:
@@ -93,6 +116,8 @@ def _out(doc: dict) -> PairOut:
         file_suffix_source=doc.get("file_suffix_source", ""),
         file_suffix_target=doc.get("file_suffix_target", ""),
         active=bool(doc.get("active", True)),
+        hf_repo_id=doc.get("hf_repo_id"),
+        hf_text_repo_id=doc.get("hf_text_repo_id"),
         tts_source_engine=doc.get("tts_source_engine"),
         tts_source_voices=list(voices_src) if isinstance(voices_src, list) else None,
         tts_source_mms_model=doc.get("tts_source_mms_model"),

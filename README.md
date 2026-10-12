@@ -8,21 +8,28 @@ This folder contains the FastAPI backend for the Speech Parallel Data App.
 
 If you’re looking for the full monorepo overview (web/admin-web/mobile/scripts), see the project root `[README.md](../README.md)`.
 
+> **Deployment:** The API runs on **Vercel** (serverless) via `api/index.py` +
+> `vercel.json`. See [Deploy to Vercel](#deploy-to-vercel). The MMS (torch) TTS
+> stack was removed; all server-side TTS synthesis is **offline-only** now (see
+> [Offline TTS workflow](#offline-tts-workflow)). Railway/Docker files remain in
+> the repo marked **LEGACY**.
+
 ## Requirements
 
-- Python 3.10+
-- MongoDB (local, Railway, or Atlas)
+- Python 3.12 (matches the Vercel runtime; 3.10+ works locally)
+- MongoDB (local or Atlas)
+- Cloudflare R2 for audio bytes in production (`REQUIRE_R2=true`)
 
 ## Quickstart (local)
 
 From `backend/`:
 
 ```bash
-python -m venv venv
+python -m venv .venv
 # Windows:
-venv\Scripts\activate
+.venv\Scripts\activate
 # macOS/Linux:
-# source venv/bin/activate
+# source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
@@ -33,14 +40,28 @@ Create a local env file:
 copy .env.example .env
 ```
 
-Run the API:
+Provision the database once (indexes, default pair, legacy backfill):
+
+```bash
+# Windows PowerShell: $env:PYTHONPATH="."
+set PYTHONPATH=.
+python scripts/init_db.py
+```
+
+Run the API (either entrypoint works locally):
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# or match the Vercel entrypoint:
+uvicorn api.index:app --reload --host 0.0.0.0 --port 8000
 ```
 
-- Health check: `GET /health`
+- Health check: `GET /health` → `{"status":"ok"}`
 - API docs: `GET /docs`
+
+> **Note on DB init:** The app no longer creates indexes or seeds data on
+> startup (that was removed for fast serverless cold starts). Run
+> `scripts/init_db.py` once per database — it is idempotent and safe to re-run.
 
 ## Configuration (environment variables)
 
@@ -108,7 +129,7 @@ When configured, audio can be written to R2 instead of GridFS.
 Notes:
 
 - R2 code uses `aioboto3` at runtime (imported only when R2 is used).
-- **On Railway**: R2 is **required** (the backend fails fast if R2 is not configured) so MongoDB is used for **metadata/users** only.
+- When `REQUIRE_R2=true` (production / Vercel), R2 is **required** — the backend fails fast if R2 is not configured, and MongoDB is used for **metadata/users** only. Leave `REQUIRE_R2=false` for local GridFS-only dev.
 - Migration scripts:
   - Parallel dataset (collection `speech_parallel`): `scripts/migrate_gridfs_to_r2.py`
   - Synthetic pairs (collection `parallel_synth_pairs` by default): `scripts/migrate_synth_gridfs_to_r2.py`
@@ -167,8 +188,8 @@ The API is assembled in `[app/main.py](app/main.py)`.
 - `GET /api/audio/export` (ZIP export; capped)
 - `POST /api/audio/english/bulk` (bulk upload WAVs)
 - `POST /api/audio/english/with-text` (upload one WAV + optional text)
-- `POST /api/audio/english/speak` (backend TTS → WAV + doc)
-- `POST /api/audio/parallel/bulk-csv` (CSV import; per-row TTS; `max_rows` cap)
+- `POST /api/audio/english/speak` (**501** — offline TTS only)
+- `POST /api/audio/parallel/bulk-csv` (**501** — offline TTS only)
 
 Batch-of-25 flow:
 
@@ -213,22 +234,26 @@ Full dataset downloads (uncapped; can be large/memory-heavy):
 
 - `GET /api/admin/datasets/parallel/download?status=all|pending|submitted`
 - `GET /api/admin/datasets/synthetic/download?status=all|pending|approved|rejected`
+- `POST /api/admin/datasets/hf-sync` (chunked HuggingFace dataset sync; see [HuggingFace dataset sync](#huggingface-dataset-sync))
 
 Synthetic TTS pairs (QA + export; **pair-aware multi-language TTS**):
 
 - `GET /api/admin/synth-pairs` (list; optional `pair_id`)
 - `GET /api/admin/synth-pairs/stats`
-- `POST /api/admin/synth-pairs/bulk-csv` — **`pair_id` required**; TTS both sides per row using pair config (`max_rows` default 50, max 200)
+- `POST /api/admin/synth-pairs/bulk-csv` — **501** on this deployment (offline TTS only); use `scripts/import_synth_pairs_csv.py`
 - `PATCH /api/admin/synth-pairs/{id}/validation`
 - `GET /api/admin/synth-pairs/{id}/detail`
 - `GET /api/admin/synth-pairs/{id}/english|swahili` (stream source/target audio)
 - `GET /api/admin/synth-pairs/export` (ZIP export; capped)
 
-**TTS engines (per language pair):**
+**TTS engines (per language pair) — offline only:**
 
-- **English source** (`audio_folder_source: english`): always **Edge TTS** with random **male/female** voices (8-voice default pool; override via `tts_source_voices` on the pair).
-- **Target**: **Edge** when Azure has voices (e.g. Swahili), or **MMS** (HuggingFace `tts_target_mms_model`) for low-resource languages (Twi, Hausa, Ga, …). Folder-name presets apply when TTS fields are omitted (`swahili` → Edge; `twi`, `ga`, `ewe`, … → MMS defaults).
-- Configure via `POST/PATCH /api/admin/language-pairs` optional fields: `tts_target_engine`, `tts_target_voices`, `tts_target_mms_model`, …
+Server-side synthesis endpoints return **501** on the serverless deployment.
+Generate audio **offline** with the CLI (see [Offline TTS workflow](#offline-tts-workflow)); the pair's TTS config still drives which engine/voice the CLI uses.
+
+- **English source** (`audio_folder_source: english`): **Edge TTS** with random **male/female** voices (8-voice default pool; override via `tts_source_voices` on the pair).
+- **Target**: **Edge** when Azure has voices (e.g. Swahili). **MMS was removed** — pairs configured for the `mms` engine raise a clear "unsupported" error on the server; generate MMS audio with a locally-installed toolchain if you still need it.
+- Configure via `POST/PATCH /api/admin/language-pairs` optional fields: `tts_target_engine`, `tts_target_voices`, and the new `hf_repo_id` (HuggingFace dataset target for this pair).
 
 **Bulk CSV query params:** `pair_id`, `source_column`, `target_column` (legacy aliases: `english_column`, `swahili_column`). Column defaults come from the pair’s folder names.
 
@@ -253,7 +278,7 @@ python scripts/import_synth_pairs_csv.py --url https://your-api.example.com ^
 
 Admin UI (pair workspace → Synth): use **Upload full file** for CSV or Excel — same chunked flow in the browser.
 
-**MMS optional deps** (install on servers that import non-Edge targets): `torch`, `transformers`, `scipy` (see `requirements.txt`). Expect ~1–2 GB RAM when a model is loaded.
+**MMS removed:** the `torch`/`transformers` stack is no longer bundled. The synth bulk-CSV endpoint returns 501; run the offline CLI instead.
 
 Parallel text corpus (text-only; admin):
 
@@ -279,102 +304,150 @@ The contributor web app routes by `role` from login/`/me`. If you still see Home
 3. **Sign out**, then sign in again.
 4. DevTools → Network → `login` response must include `"role":"reviewer"`.
 
-## Docker (API + MongoDB)
+## Deploy to Vercel
 
-From `backend/`:
+The API runs as a single ASGI function on Vercel:
 
-```bash
-docker compose up --build
-```
+- `[api/index.py](api/index.py)` imports the FastAPI `app` and exposes it as the handler.
+- `[vercel.json](vercel.json)` rewrites **all** paths to that function (Python 3.12, 60s max duration).
+- `[.vercelignore](.vercelignore)` keeps the bundle small (no venv, scripts, legacy Docker files, or TTS toolchain).
 
-- API: `http://localhost:8000`
-- MongoDB: `mongodb://localhost:27017`
+### One-time setup
 
-Important: the current `[docker-compose.yml](docker-compose.yml)` sets `CORS_ORIGINS: "*"`, but the app rejects `*` when credentials are enabled.
-For local use, set `CORS_ORIGINS` to exact origins (e.g. `http://localhost:5173,http://localhost:5174`) via compose overrides or your environment.
+1. **Provision the database** (from your machine, against the production Mongo):
 
-## Deployment notes (Railway)
+   ```bash
+   set PYTHONPATH=.   # PowerShell: $env:PYTHONPATH="."
+   python scripts/init_db.py
+   ```
 
-This backend is compatible with Railway’s default Python deploy **or** a Docker-based deploy.
+2. **Create the Vercel project** with **Root Directory = `backend`**.
 
-### Recommended: Docker deploy (includes ffmpeg)
+3. **Set environment variables** in the Vercel project (Settings → Environment Variables):
 
-The repo includes a `[Dockerfile](Dockerfile)` that installs `ffmpeg` (needed for `pydub` audio conversions). If you use any feature path that depends on server-side conversions, Docker avoids surprises.
+   | Variable | Required | Notes |
+   | --- | --- | --- |
+   | `MONGODB_URI` | yes | Atlas `mongodb+srv://...` recommended |
+   | `DATABASE_NAME` | yes | e.g. `speech_parallel` |
+   | `REQUIRE_R2` | yes | `true` — enforces R2 + CORS in prod |
+   | `CORS_ORIGINS` | yes | comma-separated exact frontend origins (no `*`) |
+   | `ADMIN_JWT_SECRET` | yes | long random secret |
+   | `ADMIN_COOKIE_SECURE` | yes | `true` (HTTPS) |
+   | `ADMIN_COOKIE_SAMESITE` | yes | `none` (cross-site admin UI) |
+   | `R2_ENDPOINT_URL` / `R2_BUCKET_NAME` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | yes | audio bytes |
+   | `HF_TOKEN` | for HF sync | write token for the dataset repo(s) |
+   | `CONTRIBUTOR_COOKIE_SECURE` / `CONTRIBUTOR_COOKIE_SAMESITE` | if contributor cookies | `true` / `none` |
+   | `CONTRIBUTOR_JWT_SECRET` | recommended | separate from admin |
 
-### Railway service setup
+4. **Deploy** (git push or `vercel --prod`).
 
-- **Root Directory**: set to `backend`
-- **Start command**: Railway can use `[Procfile](Procfile)` (uvicorn binds to `$PORT`).
+### Serverless constraints
 
-### Railway environment variables (copy/paste template)
-
-Set these in the Railway service **Variables**.
-
-#### Required
-
-- `MONGODB_URI` = your external Mongo URL (`mongodb://...` or `mongodb+srv://...`)
-- `DATABASE_NAME` = `speech_parallel` (or your preferred name)
-- `CORS_ORIGINS` = comma-separated exact frontend origins, for example:
-  - `https://<your-admin-web-service>.up.railway.app`
-  - `https://<your-web-service>.up.railway.app`
-- `ADMIN_JWT_SECRET` = long random secret
-
-#### Required for audio storage (Cloudflare R2)
-
-- `R2_ENDPOINT_URL`
-- `R2_BUCKET_NAME`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-
-#### Cross-domain cookies (admin-web and API are different Railway domains)
-
-- `ADMIN_COOKIE_SECURE=true`
-- `ADMIN_COOKIE_SAMESITE=none`
-
-If you use contributor cookie auth (`/api/contributor/auth/*`) in production, also set:
-
-- `CONTRIBUTOR_COOKIE_SECURE=true`
-- `CONTRIBUTOR_COOKIE_SAMESITE=none`
-- (Optional but recommended) `CONTRIBUTOR_JWT_SECRET=<another-long-random-secret>`
-
-Notes:
-
-- On Railway, the API will **fail to start** if `CORS_ORIGINS` is not set (see `[app/main.py](app/main.py)`).
-- `CORS_ORIGINS` must not include `*` because the API uses credentialed requests.
+- Functions are **stateless** with short timeouts (10s hobby / 60s Pro default; `vercel.json` sets 60s). No persistent DB connections — the Motor client is cached per warm instance.
+- **No ffmpeg / no ML stack.** Server-side TTS endpoints return **501**; see the offline workflow below.
+- Large ZIP exports and HF sync are **bounded**: HF sync is chunked (`POST /api/admin/datasets/hf-sync`), and heavy full-dataset work should use the CLI scripts.
 
 ### Post-deploy smoke tests
 
-After Railway assigns a domain to the API service (for example `https://<api>.up.railway.app`):
-
-1) Health:
-
 ```bash
-curl -sS https://<api-domain>/health
-```
-
-1) Docs:
-
-```bash
-curl -I https://<api-domain>/docs
-```
-
-1) Admin cookie flow (run from anywhere; you should see a `set-cookie` header):
-
-```bash
-curl -i https://<api-domain>/api/admin/auth/login ^
+curl -sS https://<your-app>.vercel.app/health
+curl -I  https://<your-app>.vercel.app/docs
+curl -i  https://<your-app>.vercel.app/api/admin/auth/login ^
   -H "content-type: application/json" ^
   -d "{\"email\":\"you@example.com\",\"password\":\"your-password\"}"
+curl -sS "https://<your-app>.vercel.app/api/audio?page=1&limit=20"
 ```
 
-1) Public list:
+## Offline TTS workflow
+
+Server-side synthesis moved off the API. Generate audio on an admin machine and
+upload the WAVs via the surviving insert endpoints.
+
+1. Install the toolchain locally (needs system **ffmpeg**):
+
+   ```bash
+   pip install -r requirements.txt -r requirements-tts.txt
+   # ffmpeg: choco install ffmpeg (Windows) / apt-get install ffmpeg / brew install ffmpeg
+   ```
+
+2. Run an import script against the deployed API (they synthesize locally and
+   upload pre-generated WAVs):
+
+   ```bash
+   python scripts/import_synth_pairs_csv.py --url https://<your-app>.vercel.app ^
+     --pair-id YOUR_PAIR_ID --file script.csv --source-column english --target-column swahili
+   ```
+
+Endpoints that now return **501** (offline-only): `POST /api/audio/english/speak`,
+`POST /api/audio/parallel/bulk-csv`, `POST /api/admin/synth-pairs/bulk-csv`.
+Surviving upload endpoints: `POST /api/audio/english/with-text`, `POST /api/audio/english/bulk`.
+
+## HuggingFace dataset sync
+
+Push data to HuggingFace **dataset** repos in bounded batches that fit the
+serverless timeout. Two datasets are supported, each with its own repo:
+
+| `dataset` | Source collection | Records pushed | Per-pair repo field |
+| --- | --- | --- | --- |
+| `speech` (default) | `speech_parallel` | `status == "submitted"` with source+target audio | `hf_repo_id` |
+| `text` | `parallel_text_corpus` | `task_type == "translation"`, `status == "submitted"`, non-empty `text_source` **and** `text_target` | `hf_text_repo_id` |
+
+- Set `HF_TOKEN` (write access) in the environment.
+- Set the target repo(s) per language pair via `hf_repo_id` and/or
+  `hf_text_repo_id` (`owner/name`) on `POST/PATCH /api/admin/language-pairs`, or
+  pass `repo_id` per request. When `repo_id` is omitted it falls back to the
+  pair's field for the chosen `dataset`.
+- Audio and text are **separate repos** and page independently (each keeps its
+  own cursor and sync stamp: `hf_synced_at` / `hf_text_synced_at`).
+
+Call repeatedly, feeding `next_cursor` back as `cursor`, until `done` is true:
 
 ```bash
-curl -sS "https://<api-domain>/api/audio?page=1&limit=20"
+# Speech (default). dry_run reports without pushing. Admin cookie required.
+curl -i https://<your-app>.vercel.app/api/admin/datasets/hf-sync ^
+  -H "content-type: application/json" ^
+  --cookie "admin_session=..." ^
+  -d "{\"dataset\":\"speech\",\"pair_id\":\"YOUR_PAIR_ID\",\"limit\":10,\"dry_run\":true}"
+
+# Text-to-text. Repeat with the returned next_cursor until {"done": true}.
+curl -s https://<your-app>.vercel.app/api/admin/datasets/hf-sync ^
+  -H "content-type: application/json" ^
+  --cookie "admin_session=..." ^
+  -d "{\"dataset\":\"text\",\"pair_id\":\"YOUR_PAIR_ID\",\"limit\":10,\"cursor\":\"<next_cursor>\"}"
 ```
+
+Request fields: `dataset` (`speech`|`text`), `repo_id`, `pair_id`, `cursor`,
+`limit`, `resync`, `dry_run`. Response: `repo_id`, `pushed`, `skipped`,
+`next_cursor`, `done`, `pushed_ids`, `dry_run`. Synced records are stamped and
+skipped on later runs unless `resync=true`. Speech commits the paired WAVs plus
+a per-record shard (`data/metadata/<id>.jsonl`); text commits a per-record shard
+(`data/text/<id>.jsonl`).
+
+Logic is verified by `scripts/check_hf_sync.py` (no external services needed):
+
+```bash
+python scripts/check_hf_sync.py
+```
+
+## Legacy: Docker / Railway (not used for the live API)
+
+> These files are kept for self-hosting but the live API deploys to Vercel.
+
+Local container dev (API + MongoDB):
+
+```bash
+docker compose up --build   # API on :8000, MongoDB on :27017
+```
+
+`[docker-compose.yml](docker-compose.yml)` sets `CORS_ORIGINS: "*"`, which the app
+rejects when credentials are on — override with exact origins. The
+`[Dockerfile](Dockerfile)` installs ffmpeg and the optional TTS toolchain (MMS/torch
+removed). Railway config lives in `[railway.toml](railway.toml)` / `[Procfile](Procfile)`
+with Root Directory `backend` and `REQUIRE_R2=true`.
 
 ### Migration (move existing audio from GridFS to R2)
 
-Run these once (from `backend/` with venv active) after you’ve set `MONGODB_URI` and all `R2_*` variables:
+Run once (from `backend/` with venv active) after setting `MONGODB_URI` and all `R2_*`:
 
 ```bash
 set PYTHONPATH=.
@@ -386,4 +459,9 @@ python scripts/migrate_synth_gridfs_to_r2.py
 
 - **Admin login returns 503**: `ADMIN_JWT_SECRET` is not set.
 - **Browser requests fail with CORS + cookies**: ensure `CORS_ORIGINS` is an exact origin list (not `*`), and cookie `SameSite`/`Secure` are correct for your deployment topology.
-- **OpenAPI “Failed to fetch” on CSV imports**: bulk CSV endpoints do per-row TTS and can run for minutes; browsers/proxies may time out. Use smaller `max_rows` in `/docs`, or use scripts / curl with a long timeout.
+- **App fails to start with "R2 is required"**: `REQUIRE_R2=true` but R2 vars are missing. Set all `R2_*`, or use `REQUIRE_R2=false` for local GridFS dev.
+- **TTS endpoints return 501**: expected — synthesis is offline-only. Use `scripts/import_*_csv.py` and upload WAVs via `/api/audio/english/with-text`.
+- **HF sync returns 400 "HF_TOKEN is not set"**: set `HF_TOKEN` with write access, or call with `dry_run=true` to preview.
+- **HF sync "repo_id is required"**: pass `repo_id` in the body or set `hf_repo_id` on the language pair.
+- **No data after deploy / missing default pair**: run `python scripts/init_db.py` once against the production database (startup no longer seeds).
+- **`python-dotenv could not parse` locally**: your `.env` contains non `KEY=value` lines (e.g. pasted shell commands). Remove them — `.env.example` shows the valid format.

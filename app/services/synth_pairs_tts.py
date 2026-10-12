@@ -11,7 +11,15 @@ from app.services.pair_tts_config import (
     resolve_pair_tts,
 )
 from app.services.tts_english import EDGE_VOICE, generate_wav_edge_tts
-from app.services.tts_mms import MmsTtsNotInstalledError, generate_wav_mms
+
+
+class MmsTtsUnsupportedError(RuntimeError):
+    """Raised when a pair requests the MMS engine, which is no longer supported.
+
+    MMS (torch/transformers) synthesis was removed when the API moved to a
+    serverless host. Generate MMS audio offline on an admin machine with the
+    optional TTS toolchain, then upload the WAVs via the insert endpoints.
+    """
 
 
 def pick_edge_voice(voices: tuple[tuple[str, str], ...]) -> tuple[str, str]:
@@ -41,13 +49,11 @@ def _synthesize_side(text: str, side: TtsSideConfig, side_label: str) -> tuple[b
         return wav, voice, "edge", gender
 
     if engine == "mms":
-        model_id = side.mms_model or ""
-        try:
-            wav = generate_wav_mms(text, model_id)
-        except MmsTtsNotInstalledError:
-            raise
-        wav = maybe_augment_wav(wav)
-        return wav, model_id, "mms", None
+        raise MmsTtsUnsupportedError(
+            f"{side_label} uses the MMS engine, which is no longer available on the "
+            "server. Generate MMS audio offline (scripts/import_synth_pairs_csv.py "
+            "with the optional TTS toolchain) and upload the WAVs instead."
+        )
 
     raise ValueError(f'{side_label} TTS engine "{engine}" is not supported.')
 
@@ -83,6 +89,7 @@ __all__ = [
     "ENGLISH_VOICES",
     "SWAHILI_VOICES",
     "EDGE_VOICE",
+    "MmsTtsUnsupportedError",
     "generate_english_wav_for_synth",
     "generate_swahili_wav_for_synth",
     "generate_source_wav_for_synth",

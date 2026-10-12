@@ -1,7 +1,8 @@
-"""Admin-only API: bidirectional TTS synth pairs (CSV import, list, stream, validation, ZIP export)."""
-import asyncio
-import csv
-import io
+"""Admin-only API: bidirectional TTS synth pairs (list, stream, validation, ZIP export).
+
+Note: server-side CSV→TTS import is disabled on this deployment (returns 501).
+Generate audio offline and upload via the insert endpoints / CLI scripts.
+"""
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -11,7 +12,6 @@ from app.auth_admin import AdminIdentity, require_admin
 from app.config import settings
 from app.db import get_database
 from app.models import (
-    BulkCsvErrorItem,
     BulkCsvResponse,
     SynthPairListResponse,
     SynthPairStatsResponse,
@@ -19,7 +19,6 @@ from app.models import (
 )
 from app.services.language_pairs import get_pair_by_id
 from app.services.synth_pairs_export import build_synth_export_zip
-from app.services.synth_pairs_insert import insert_synth_pair
 from app.services.synth_pairs_read import (
     get_synth_doc,
     get_synth_pair_stats,
@@ -27,12 +26,6 @@ from app.services.synth_pairs_read import (
     stream_english,
     stream_swahili,
 )
-from app.services.synth_pairs_tts import (
-    generate_source_wav_for_synth,
-    generate_target_wav_for_synth,
-)
-from app.services.tts_mms import MmsTtsNotInstalledError
-
 router = APIRouter(
     prefix="/api/admin/synth-pairs",
     tags=["admin-synth-pairs"],
@@ -124,120 +117,20 @@ async def synth_bulk_csv(
     english_column: str | None = Query(None, description="Alias for source_column (legacy)"),
     swahili_column: str | None = Query(None, description="Alias for target_column (legacy)"),
 ):
-    """Import parallel source/target text; TTS both sides per row using pair TTS config."""
-    pair_oid, pair_doc = await _pair_oid_required(pair_id)
+    """Server-side synth TTS is offline-only; this endpoint returns 501.
 
-    src_col = (source_column or english_column or pair_doc.get("audio_folder_source") or "english").strip()
-    tgt_col = (target_column or swahili_column or pair_doc.get("audio_folder_target") or "swahili").strip()
-
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only .csv files allowed")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Empty file")
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid UTF-8: {e}") from e
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames is None:
-        raise HTTPException(status_code=400, detail="CSV has no header row")
-    headers_lower = {h.strip().lower(): h for h in reader.fieldnames if h}
-    src_key = src_col.lower()
-    tgt_key = tgt_col.lower()
-    if src_key not in headers_lower:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing source column '{src_col}'. Found: {list(reader.fieldnames)}",
-        )
-    if tgt_key not in headers_lower:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing target column '{tgt_col}'. Found: {list(reader.fieldnames)}",
-        )
-    col_src = headers_lower[src_key]
-    col_tgt = headers_lower[tgt_key]
-    rows: list[tuple[int, str, str]] = []
-    for i, row in enumerate(reader, start=1):
-        src = (row.get(col_src) or "").strip()
-        tgt = (row.get(col_tgt) or "").strip()
-        if not src and not tgt:
-            continue
-        rows.append((i, src, tgt))
-    if len(rows) > max_rows:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"CSV has {len(rows)} non-empty data rows; max per request is {max_rows}. "
-                f"Split into chunks of ≤{max_rows} rows (repeat header in each chunk) and POST each."
-            ),
-        )
-
-    created_ids: list[str] = []
-    errors: list[BulkCsvErrorItem] = []
-
-    for row_index, src_text, tgt_text in rows:
-        if not src_text:
-            errors.append(BulkCsvErrorItem(row=row_index, detail="Empty source text"))
-            continue
-        if not tgt_text:
-            errors.append(
-                BulkCsvErrorItem(
-                    row=row_index,
-                    detail="Empty target text (required for bidirectional TTS)",
-                )
-            )
-            continue
-        try:
-            wav_src, voice_src, engine_src, gender_src = await asyncio.to_thread(
-                generate_source_wav_for_synth, src_text, pair_doc
-            )
-        except ValueError as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=str(e)))
-            continue
-        except Exception as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=f"Source TTS: {e!s}"))
-            continue
-        try:
-            wav_tgt, voice_tgt, engine_tgt, gender_tgt = await asyncio.to_thread(
-                generate_target_wav_for_synth, tgt_text, pair_doc
-            )
-        except MmsTtsNotInstalledError as e:
-            raise HTTPException(status_code=501, detail=str(e)) from e
-        except ValueError as e:
-            msg = str(e)
-            if "not supported" in msg.lower() or "not configured" in msg.lower():
-                errors.append(BulkCsvErrorItem(row=row_index, detail=msg))
-            else:
-                errors.append(BulkCsvErrorItem(row=row_index, detail=msg))
-            continue
-        except Exception as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=f"Target TTS: {e!s}"))
-            continue
-        try:
-            new_id = await insert_synth_pair(
-                wav_src,
-                wav_tgt,
-                src_text,
-                tgt_text,
-                voice_src,
-                voice_tgt,
-                engine_tgt,
-                gender_tgt,
-                csv_row=row_index,
-                language_pair_id=pair_oid,
-                tts_english_engine=engine_src,
-                gender_en=gender_src,
-            )
-            created_ids.append(new_id)
-        except Exception as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=f"DB/GridFS: {e!s}"))
-
-    return BulkCsvResponse(
-        created_ids=created_ids,
-        errors=errors,
-        processed=len(rows),
-        failed=len(errors),
+    Per-row TTS needs edge-tts + ffmpeg (and formerly torch for MMS), which are
+    not available on the serverless host. Generate the paired WAVs offline and
+    import them with ``scripts/import_synth_pairs_csv.py`` against the surviving
+    insert endpoints.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Server-side TTS synthesis is disabled on this deployment. Generate "
+            "audio offline with scripts/import_synth_pairs_csv.py (installs the "
+            "optional TTS toolchain locally) and upload the resulting WAVs."
+        ),
     )
 
 

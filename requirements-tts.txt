@@ -1,0 +1,10 @@
+# Offline-only TTS toolchain. NOT installed on the serverless (Vercel) host.
+# Install locally on an admin machine to generate audio with the import scripts:
+#     pip install -r requirements.txt -r requirements-tts.txt
+# edge-tts/pyttsx3 produce audio; pydub (via ffmpeg) converts MP3->WAV.
+# ffmpeg must be installed on the system (e.g. `choco install ffmpeg` on Windows,
+# `apt-get install ffmpeg` on Debian/Ubuntu, `brew install ffmpeg` on macOS).
+edge-tts>=6.1.0
+pydub>=0.25.1
+pyttsx3>=2.90
+audioop-lts; python_version>='3.13'

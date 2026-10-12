@@ -1,0 +1,33 @@
+# Keep the Vercel function bundle small: ship only app code + requirements.txt.
+
+# Virtualenvs / caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Offline-only tooling (TTS synthesis runs on an admin machine, not on Vercel)
+scripts/
+requirements-tts.txt
+requirements-mms.txt
+
+# Legacy container / Railway deploy files (kept in repo, not needed on Vercel)
+Dockerfile
+.dockerignore
+docker-compose.yml
+Procfile
+railway.toml
+nixpacks.toml
+apt.txt
+
+# Local env / editor
+.env
+.env.*
+Data-App.code-workspace
+
+# Docs / VCS
+README.md
+.git/

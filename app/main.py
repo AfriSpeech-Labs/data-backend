@@ -1,5 +1,3 @@
-import os
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,15 +10,16 @@ def _cors_allow_origins() -> list[str]:
     if "*" in parts:
         raise RuntimeError(
             "CORS_ORIGINS cannot include '*' while admin auth uses cookies (credentials). "
-            "Set CORS_ORIGINS to your admin site origin(s), comma-separated, e.g. "
-            "https://elegant-youthfulness-production-8e95.up.railway.app"
+            "Set CORS_ORIGINS to your frontend origin(s), comma-separated, e.g. "
+            "https://your-admin-web.example.com,https://your-web.example.com"
         )
     if parts:
         return parts
-    if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+    # In production (REQUIRE_R2=true), CORS_ORIGINS must be set explicitly.
+    if settings.require_r2:
         raise RuntimeError(
-            "CORS_ORIGINS is unset. Set it on Railway to your admin web URL(s), e.g. "
-            "https://your-admin-service.up.railway.app (comma-separated if multiple)."
+            "CORS_ORIGINS is unset. Set it to your deployed frontend origin(s), "
+            "comma-separated (no '*'), e.g. https://your-admin-web.example.com"
         )
     # Local dev: admin-web 5174, contributor web 5173 (see vite configs)
     return [
@@ -92,6 +91,4 @@ async def shutdown():
 
 @app.get("/health")
 def health():
-    from app.services.tts_mms import mms_import_diagnostics
-
-    return {"status": "ok", "mms_tts": mms_import_diagnostics()}
+    return {"status": "ok"}

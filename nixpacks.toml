@@ -1,11 +1,11 @@
-# Fallback when Railway uses Railpack instead of Dockerfile.
+# LEGACY (Railway Railpack fallback). The API now targets Vercel serverless.
+# MMS (torch/transformers) was removed; TTS extras are optional (offline use).
 [phases.setup]
-aptPkgs = ["ffmpeg", "libgomp1"]
+aptPkgs = ["ffmpeg"]
 
 [phases.install]
 cmds = [
   "pip install --upgrade pip",
   "pip install -r requirements.txt",
-  "pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-mms.txt",
-  "python -c \"import sentencepiece; import torch; from transformers import AutoTokenizer, VitsModel; AutoTokenizer.from_pretrained('facebook/mms-tts-aka', use_fast=False); print('MMS tokenizer OK', torch.__version__)\"",
+  "pip install -r requirements-tts.txt",
 ]

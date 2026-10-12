@@ -1,6 +1,7 @@
+# LEGACY — the API now deploys to Vercel (see vercel.json). Kept for reference.
 # Railway: API service with Root Directory = `backend`.
-# Build via Dockerfile (Python 3.12 + ffmpeg + CPU torch for MMS TTS).
-# Env vars: MONGODB_URI, CORS_ORIGINS, ADMIN_*, R2_*, etc. R2 required on Railway.
+# Build via Dockerfile (Python 3.12 + ffmpeg; MMS/torch removed).
+# Env vars: MONGODB_URI, CORS_ORIGINS, ADMIN_*, R2_*, HF_TOKEN, REQUIRE_R2=true.
 
 [build]
 builder = "DOCKERFILE"

@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://localhost:27017"
     database_name: str = "speech_parallel"
     gridfs_bucket: str = "audio"
+    # When true (production), Cloudflare R2 is mandatory and the app fails fast
+    # if R2_* is not configured. Leave false for local GridFS-only development.
+    # On Vercel, set REQUIRE_R2=true in the project environment variables.
+    require_r2: bool = False
     # Comma-separated exact origins (no "*"). Wildcard is invalid with cookie credentials.
     cors_origins: str = ""
     # Docs OTP: when True, /docs and /redoc require a 6-digit code (logged at startup).
@@ -33,6 +37,8 @@ class Settings(BaseSettings):
     r2_bucket_name: str = ""
     r2_access_key_id: str = ""
     r2_secret_access_key: str = ""
+    # HuggingFace dataset sync (admin). Token needs write access to the target repo(s).
+    hf_token: str = ""
     # Default pair slug for legacy session-only clients (X-Session-ID) and unscoped imports.
     default_language_pair_slug: str = "swahili-english"
     # Contributor auth (JWT httpOnly cookie or Bearer); PIN set by admin.

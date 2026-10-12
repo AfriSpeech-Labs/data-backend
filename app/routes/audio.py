@@ -1,10 +1,9 @@
 """Audio API routes: bulk upload, list, stream, submit Swahili."""
-import asyncio
-import csv
 import io
-import os
 from bson import ObjectId
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
+
+from app.config import settings
 
 from app.auth_contributor import (
     assert_contributor_doc_pair,
@@ -18,7 +17,6 @@ from app.models import (
     AudioStatsResponse,
     AudioDurationStatsResponse,
     BulkCsvResponse,
-    BulkCsvErrorItem,
 )
 from app.services.audio_duration import get_wav_duration_seconds
 from app.services.speech_insert import insert_item_from_english_wav
@@ -32,7 +30,6 @@ from app.services.speech_parallel_read import (
     stream_english_response,
     stream_swahili_response,
 )
-from app.services.tts_english import generate_wav_from_text
 from app.services.language_pairs import pair_audio_keys
 from app.r2_storage import r2_enabled, put_object_bytes
 
@@ -117,24 +114,19 @@ async def create_english_speak(
     text_english: str = Form(..., min_length=1),
     pair_id: str | None = Query(None),
 ):
-    """Create one item from English text: backend TTS generates WAV, stores text + audio. Requires pyttsx3."""
-    text_english = text_english.strip()
-    if not text_english:
-        raise HTTPException(status_code=400, detail="text_english is required")
-    try:
-        wav_data = await asyncio.to_thread(generate_wav_from_text, text_english)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    new_id = await insert_item_from_english_wav(
-        wav_data,
-        text_english=text_english,
-        text_swahili=None,
-        wav_filename="english.wav",
-        pair_id=pair_id,
+    """Server-side TTS is offline-only; returns 501.
+
+    Edge TTS needs ffmpeg/pydub, unavailable on the serverless host. Generate the
+    WAV offline (or use /english/with-text to upload a client-generated WAV).
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Server-side TTS is disabled on this deployment. Upload a "
+            "pre-generated WAV via POST /api/audio/english/with-text, or run the "
+            "offline import scripts."
+        ),
     )
-    return {"id": new_id}
 
 
 BULK_CSV_DEFAULT_MAX = 50
@@ -149,94 +141,20 @@ async def bulk_csv_parallel(
     swahili_column: str = Query("swahili"),
     pair_id: str | None = Query(None),
 ):
-    """Bulk import parallel English/Swahili text: TTS per English line, store text_english, text_swahili, audio_english.
+    """Server-side per-row TTS is offline-only; returns 501.
 
-    CSV must have a header row with columns english_column and swahili_column (defaults: english, swahili).
-    Max max_rows data rows per request (default 50, cap 200); split large files into multiple uploads.
-
-    **Swagger / browser note:** Each row runs TTS synchronously, so large max_rows (e.g. 150) can take many minutes.
-    Browsers and proxies often close the connection before the response → OpenAPI "Try it out" may show **Failed to fetch**
-    even though the server is still working. Prefer **small max_rows** (5–15) when testing in /docs, or use **curl**
-    with a long `--max-time`, or **scripts/import_parallel_csv.py** (default 900s timeout per chunk).
+    This path synthesized a WAV per English line using edge-tts + ffmpeg, which
+    are not available on the serverless host. Generate audio offline with
+    scripts/import_parallel_csv.py and upload via /english/with-text (or
+    /english/bulk), which store pre-generated WAVs.
     """
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only .csv files allowed")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Empty file")
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid UTF-8: {e}") from e
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames is None:
-        raise HTTPException(status_code=400, detail="CSV has no header row")
-    headers_lower = {h.strip().lower(): h for h in reader.fieldnames if h}
-    en_key = english_column.strip().lower()
-    sw_key = swahili_column.strip().lower()
-    if en_key not in headers_lower:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing column '{english_column}'. Found: {list(reader.fieldnames)}",
-        )
-    if sw_key not in headers_lower:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing column '{swahili_column}'. Found: {list(reader.fieldnames)}",
-        )
-    col_en = headers_lower[en_key]
-    col_sw = headers_lower[sw_key]
-    rows: list[tuple[int, str, str]] = []
-    for i, row in enumerate(reader, start=1):
-        en = (row.get(col_en) or "").strip()
-        sw = (row.get(col_sw) or "").strip()
-        if not en and not sw:
-            continue
-        rows.append((i, en, sw))
-    if len(rows) > max_rows:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"CSV has {len(rows)} non-empty data rows; max per request is {max_rows}. "
-                f"Split into chunks of ≤{max_rows} rows (repeat header in each chunk) and POST each."
-            ),
-        )
-    created_ids: list[str] = []
-    errors: list[BulkCsvErrorItem] = []
-    for row_index, en, sw in rows:
-        if not en:
-            errors.append(BulkCsvErrorItem(row=row_index, detail="Empty English text"))
-            continue
-        sw_val = sw if sw else None
-        try:
-            wav_data = await asyncio.to_thread(generate_wav_from_text, en)
-        except ValueError as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=str(e)))
-            continue
-        except RuntimeError as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=str(e)))
-            continue
-        except Exception as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=f"TTS error: {e!s}"))
-            continue
-        try:
-            new_id = await insert_item_from_english_wav(
-                wav_data,
-                text_english=en,
-                text_swahili=sw_val,
-                wav_filename="english.wav",
-                pair_id=pair_id,
-            )
-            created_ids.append(new_id)
-        except Exception as e:
-            errors.append(BulkCsvErrorItem(row=row_index, detail=f"DB/GridFS: {e!s}"))
-    processed = len(rows)
-    failed = len(errors)
-    return BulkCsvResponse(
-        created_ids=created_ids,
-        errors=errors,
-        processed=processed,
-        failed=failed,
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Server-side TTS synthesis is disabled on this deployment. Use the "
+            "offline import scripts (scripts/import_parallel_csv.py) to generate "
+            "WAVs locally, then upload them."
+        ),
     )
 
 
@@ -313,17 +231,16 @@ async def _save_swahili_for_doc(
         except Exception:
             pass
 
-    is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
-    if is_railway and not r2_enabled():
+    if settings.require_r2 and not r2_enabled():
         raise HTTPException(
             status_code=503,
             detail=(
-                "Audio storage is not configured (R2 required on Railway). "
+                "Audio storage is not configured (R2 required in this environment). "
                 "Set R2_ENDPOINT_URL, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY."
             ),
         )
 
-    if (r2_enabled() or is_railway) and pair:
+    if (r2_enabled() or settings.require_r2) and pair:
         key_tgt, _ = pair_audio_keys(pair, oid_str, "target")
         await put_object_bytes(key_tgt, file_data)
         payload["r2_key_target"] = key_tgt
