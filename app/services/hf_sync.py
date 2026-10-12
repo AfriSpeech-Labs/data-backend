@@ -298,10 +298,9 @@ def _build_text_query(
     cursor: str | None,
     resync: bool,
 ) -> dict:
-    """Submitted translation tasks with both sides filled in."""
+    """Any complete text row (both sides filled): pre-completed corpus pairs AND
+    submitted translation tasks. Completeness = text_source and text_target present."""
     q: dict = {
-        "task_type": "translation",
-        "status": "submitted",
         "text_source": {"$nin": [None, ""]},
         "text_target": {"$nin": [None, ""]},
     }
@@ -325,6 +324,9 @@ def _text_metadata_record(doc: dict, id_str: str, pair: dict | None) -> dict:
         "target_language": doc.get("target_language", ""),
         "text_source": doc.get("text_source") or "",
         "text_target": doc.get("text_target") or "",
+        # Provenance: pre-completed corpus pair vs contributor-translated task.
+        "kind": "translation" if doc.get("task_type") == "translation" else "corpus",
+        "source": doc.get("source"),
         "submitted_at": (
             doc["submitted_at"].isoformat()
             if doc.get("submitted_at") is not None and hasattr(doc["submitted_at"], "isoformat")

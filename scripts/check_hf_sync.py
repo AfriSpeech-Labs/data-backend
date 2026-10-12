@@ -282,58 +282,67 @@ async def main():
         check("missing token rejected", lambda: None)
 
     # ===== Text-to-text sync (parallel_text_corpus) =====
+    # Completeness = both text_source and text_target present, regardless of
+    # task_type/status. Covers pre-completed corpus pairs AND translation tasks.
     text_docs = [
-        # valid submitted translations
+        # submitted translation task (complete)
         {"_id": oid(11), "task_type": "translation", "status": "submitted",
          "language_pair_id": oid(100), "text_source": "hi", "text_target": "mbote",
          "source_language": "english", "target_language": "kom"},
-        {"_id": oid(12), "task_type": "translation", "status": "submitted",
-         "language_pair_id": oid(100), "text_source": "bye", "text_target": "kwaheri"},
-        # missing target -> excluded by query
+        # pre-completed corpus pair: NO task_type, NO status — must be INCLUDED now
+        {"_id": oid(12), "language_pair_id": oid(100), "source": "bulk_csv",
+         "text_source": "bye", "text_target": "kwaheri"},
+        # incomplete (empty target) -> excluded
         {"_id": oid(13), "task_type": "translation", "status": "submitted",
          "language_pair_id": oid(100), "text_source": "x", "text_target": ""},
-        # pending -> excluded
+        # pending translation but BOTH texts present -> now INCLUDED (completeness, not status)
         {"_id": oid(14), "task_type": "translation", "status": "pending",
          "language_pair_id": oid(100), "text_source": "y", "text_target": "yy"},
         # already synced -> excluded unless resync
-        {"_id": oid(15), "task_type": "translation", "status": "submitted",
-         "language_pair_id": oid(100), "text_source": "z", "text_target": "zz",
-         "hf_text_synced_at": "already"},
+        {"_id": oid(15), "language_pair_id": oid(100), "source": "bulk_csv",
+         "text_source": "z", "text_target": "zz", "hf_text_synced_at": "already"},
     ]
 
-    # --- Test 5: text dry run selects only valid submitted+unsynced ---
+    # --- Test 5: text dry run selects all complete, unsynced rows (any kind) ---
     tcoll = FakeCollection(text_docs)
     install_text_fakes(tcoll)
     t1 = await hf.sync_text_batch(repo_id="acme/txt", pair_oid=oid(100), limit=50, dry_run=True)
-    check("text dry_run selects valid submitted+unsynced only",
-          lambda: assert_eq((t1.pushed, t1.skipped), (2, 0), "pushed/skipped"))
+    # complete + unsynced: 11, 12, 14 => 3 (13 incomplete, 15 already synced)
+    check("text dry_run selects all complete unsynced rows (corpus + translation)",
+          lambda: assert_eq((t1.pushed, t1.skipped), (3, 0), "pushed/skipped"))
     check("text dry_run makes no DB writes",
           lambda: assert_eq(len(tcoll.update_calls), 0, "update_calls"))
 
-    # --- Test 6: text real push via fake HF api ---
+    # --- Test 6: text real push via fake HF api, with kind provenance ---
     tcoll = FakeCollection(text_docs)
     install_text_fakes(tcoll)
     tapi = FakeHfApi()
     t2 = await hf.sync_text_batch(repo_id="acme/txt", pair_oid=oid(100), limit=10, _hf_api=tapi)
-    check("text push pushes both valid records",
-          lambda: assert_eq(t2.pushed, 2, "pushed"))
+    check("text push pushes all complete unsynced rows",
+          lambda: assert_eq(t2.pushed, 3, "pushed"))
     check("text push done when exhausted",
           lambda: assert_eq(t2.done, True, "done"))
     check("text commit carries one op per record",
-          lambda: assert_eq(len(tapi.commits[0]["operations"]), 2, "operations"))
+          lambda: assert_eq(len(tapi.commits[0]["operations"]), 3, "operations"))
     check("text synced records stamped with hf_text_repo_id",
-          lambda: assert_eq(tcoll.docs[oid(11)].get("hf_text_repo_id"), "acme/txt", "stamp"))
+          lambda: assert_eq(tcoll.docs[oid(12)].get("hf_text_repo_id"), "acme/txt", "stamp"))
     check("text already-synced record skipped",
           lambda: assert_eq(oid(15) in [ObjectId(i) for i in t2.pushed_ids], False, "skip synced"))
+    meta12 = _meta_for(tapi.commits[0]["operations"], f"{str(oid(12))}.jsonl")
+    check("corpus row tagged kind=corpus",
+          lambda: assert_eq(meta12 and meta12.get("kind"), "corpus", "kind"))
+    meta11 = _meta_for(tapi.commits[0]["operations"], f"{str(oid(11))}.jsonl")
+    check("translation row tagged kind=translation",
+          lambda: assert_eq(meta11 and meta11.get("kind"), "translation", "kind"))
 
     # --- Test 7: text resync includes already-synced ---
     tcoll = FakeCollection(text_docs)
     install_text_fakes(tcoll)
     t3 = await hf.sync_text_batch(repo_id="acme/txt", pair_oid=oid(100), limit=50,
                                   resync=True, dry_run=True)
-    # valid submitted w/ both texts: 11,12,15 => 3 (13 excluded: empty target)
+    # complete rows regardless of sync stamp: 11,12,14,15 => 4 (13 excluded: empty target)
     check("text resync includes previously synced",
-          lambda: assert_eq(t3.pushed, 3, "pushed"))
+          lambda: assert_eq(t3.pushed, 4, "pushed"))
 
     print()
     if failures:
