@@ -93,6 +93,13 @@ async def contributor_login(body: LoginBody):
             "pair_id": pair_id,
             "phone_e164": phone,
             "role": role,
+            # Also return the JWT so clients can authenticate via
+            # `Authorization: Bearer <token>` instead of the cross-site cookie
+            # (mobile browsers block SameSite cookies on cross-origin calls).
+            # The httpOnly cookie is still set below as a same-site fallback.
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_in": max_age,
         }
     )
     resp.set_cookie(
