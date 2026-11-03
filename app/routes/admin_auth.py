@@ -41,7 +41,16 @@ async def admin_login(body: LoginBody):
     email = str(doc["email"])
     token = create_admin_token(email)
     max_age = max(60, int(settings.admin_token_expire_hours * 3600))
-    resp = JSONResponse(content={"email": email})
+    resp = JSONResponse(
+        content={
+            "email": email,
+            # Bearer token for cross-site auth (mobile blocks SameSite cookies);
+            # the httpOnly cookie is still set below as a same-site fallback.
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_in": max_age,
+        }
+    )
     resp.set_cookie(
         key=settings.admin_cookie_name,
         value=token,

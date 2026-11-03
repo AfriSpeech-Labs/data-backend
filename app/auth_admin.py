@@ -1,8 +1,13 @@
-"""Admin JWT (httpOnly cookie) verification for protected /api/admin/* routes."""
+"""Admin JWT verification for protected /api/admin/* routes.
+
+Accepts the httpOnly cookie OR an ``Authorization: Bearer <token>`` header. The
+Bearer path lets the admin UI authenticate cross-site on mobile browsers that
+block SameSite cookies; the cookie remains a same-site fallback.
+"""
 from datetime import datetime, timezone, timedelta
 
 import jwt
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
@@ -49,8 +54,12 @@ def decode_admin_token(token: str) -> AdminIdentity:
 
 
 async def require_admin(
+    authorization: str | None = Header(None),
     admin_session: str | None = Cookie(None, alias=settings.admin_cookie_name),
 ) -> AdminIdentity:
-    if not admin_session:
+    token = admin_session
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return decode_admin_token(admin_session)
+    return decode_admin_token(token)
